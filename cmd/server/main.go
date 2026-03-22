@@ -87,7 +87,7 @@ func main() {
 
 	// HTTP handler
 	handler := api.NewHandler(pipeline, decisionEngine, partnerRepo, publisher, analytics, logger)
-	router := api.NewRouter(handler, logger, 300*time.Millisecond)
+	router := api.NewRouter(handler, logger, 15*time.Second)
 
 	// HTTP server
 	server := &http.Server{

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -80,7 +81,7 @@ func (h *Handler) HandleRecommend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Publish event (async, fire-and-forget)
-	go h.publisher.PublishRecommendation(r.Context(), resp)
+	go h.publisher.PublishRecommendation(context.Background(), resp)
 
 	writeJSON(w, http.StatusOK, resp)
 }

@@ -15,10 +15,10 @@ func NewBudgetManager(total time.Duration) *BudgetManager {
 	return &BudgetManager{
 		totalBudget: total,
 		allocations: map[string]time.Duration{
-			"context_fetch":   120 * time.Millisecond,
-			"partner_match":   30 * time.Millisecond,
-			"llm_call":        120 * time.Millisecond,
-			"decision_engine": 30 * time.Millisecond,
+			"context_fetch":   5 * time.Second,
+			"partner_match":   2 * time.Second,
+			"llm_call":        30 * time.Second,
+			"decision_engine": 2 * time.Second,
 		},
 	}
 }

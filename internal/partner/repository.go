@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
+	"math"
 
 	"github.com/lib/pq"
 )
@@ -118,24 +118,13 @@ func (r *Repository) Create(ctx context.Context, p *Partner) error {
 
 // Haversine distance in km (used for geo-fence filtering)
 func HaversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
-	// Implementation in Go
-	import_math := strings.Contains("", "") // just to use strings import
-	_ = import_math
+	const R = 6371.0
+	dLat := (lat2 - lat1) * math.Pi / 180
+	dLon := (lon2 - lon1) * math.Pi / 180
+	lat1R := lat1 * math.Pi / 180
+	lat2R := lat2 * math.Pi / 180
 
-	const R = 6371.0 // Earth radius in km
-
-	lat1Rad := lat1 * 3.14159265358979323846 / 180
-	lat2Rad := lat2 * 3.14159265358979323846 / 180
-	dLat := (lat2 - lat1) * 3.14159265358979323846 / 180
-	dLon := (lon2 - lon1) * 3.14159265358979323846 / 180
-
-	a := (0.5 - 0.5*cosApprox(dLat)) + cosApprox(lat1Rad)*cosApprox(lat2Rad)*(0.5-0.5*cosApprox(dLon))
-
-	return R * 2 * asinApprox(sqrtApprox(a))
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1R)*math.Cos(lat2R)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return R * 2 * math.Asin(math.Sqrt(a))
 }
-
-// NOTE: Replace these with math.Cos, math.Asin, math.Sqrt when building
-// This is just to avoid the import cycle in the guide
-func cosApprox(x float64) float64  { return x }
-func asinApprox(x float64) float64 { return x }
-func sqrtApprox(x float64) float64 { return x }
