@@ -1,0 +1,32 @@
+asyncapi: 2.6.0
+info:
+  title: context-engine Events
+  version: 1.0.0
+  description: Event contracts for the partner recommendation engine
+
+channels:
+  recommendation.created:
+    publish:
+      message:
+        payload:
+          type: object
+          properties:
+            request_id:
+              type: string
+            event_type:
+              type: string
+            payload:
+              type: object
+              properties:
+                title:
+                  type: string
+                experiences:
+                  type: array
+                source:
+                  type: string
+                  enum: [llm, rules]
+            latency_ms:
+              type: integer
+            created_at:
+              type: string
+              format: date-time
