@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -41,6 +42,7 @@ func NewDecisionEngine(
 func (de *DecisionEngine) GenerateRecommendation(
 	ctx context.Context,
 	rc *models.RecommendationContext,
+	forceRules bool,
 ) (*models.RecommendationResponse, error) {
 	start := time.Now()
 
@@ -64,10 +66,12 @@ func (de *DecisionEngine) GenerateRecommendation(
 	}{rc.SemanticTags, rc.City, rc.WeatherCondition, rc.TimeSlot})
 
 	var cachedRec models.Recommendation
-	if hit, _ := de.cache.Get(ctx, cacheKey, &cachedRec); hit {
-		de.logger.Info("LLM cache hit", "request_id", rc.RequestID)
-		resp := de.buildResponse(rc, cachedRec, time.Since(start), []string{"llm_response"})
-		return resp, nil
+	if !forceRules {
+		if hit, _ := de.cache.Get(ctx, cacheKey, &cachedRec); hit {
+			de.logger.Info("LLM cache hit", "request_id", rc.RequestID)
+			resp := de.buildResponse(rc, cachedRec, time.Since(start), []string{"llm_response"})
+			return resp, nil
+		}
 	}
 
 	// 3. Match partners from Postgres
@@ -84,21 +88,31 @@ func (de *DecisionEngine) GenerateRecommendation(
 	var recommendation models.Recommendation
 	var cacheHits []string
 
-	llmCtx, llmCancel := de.budget.StageContext(ctx, "llm_call")
-	defer llmCancel()
-
 	var llmResult *llm.LLMResult
-	llmErr := de.llmBreaker.Execute(func() error {
-		var innerErr error
-		llmResult, innerErr = de.llmClient.ComposeRecommendation(llmCtx, rc, matchedPartners)
-		return innerErr
-	})
+	var llmErr error
+
+	if !forceRules {
+		// Normal path: try LLM with timeout budget
+		llmCtx, llmCancel := de.budget.StageContext(ctx, "llm_call")
+		defer llmCancel()
+
+		llmErr = de.llmBreaker.Execute(func() error {
+			var innerErr error
+			llmResult, innerErr = de.llmClient.ComposeRecommendation(llmCtx, rc, matchedPartners)
+			return innerErr
+		})
+	} else {
+		// Forced rules mode (feature flag for demo/testing)
+		llmErr = errors.New("forced rules mode")
+		de.logger.Info("forced rules mode", "request_id", rc.RequestID)
+	}
 
 	if llmErr != nil {
 		// Graceful degradation: fall back to rules
-		de.logger.Warn("LLM failed, using rule-based fallback",
+		de.logger.Warn("LLM skipped, using rule-based fallback",
 			"error", llmErr,
 			"request_id", rc.RequestID,
+			"forced", forceRules,
 		)
 		recommendation = RuleBasedFallback(rc, matchedPartners)
 	} else {

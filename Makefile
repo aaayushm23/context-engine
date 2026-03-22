@@ -1,4 +1,4 @@
-.PHONY: build run test lint migrate seed demo clean
+.PHONY: build run test lint migrate seed demo demo-fast demo-failure clean
 
 build:
 	go build -o bin/context-engine ./cmd/server
@@ -25,11 +25,13 @@ seed:
 	PGPASSWORD=secret psql -h localhost -U postgres -d contextengine -f migrations/002_seed_partners.sql
 
 demo:
-	@echo "🎯 Sending recommendation request for Berlin, rainy Saturday..."
-	@curl -s -X POST http://localhost:8080/v1/recommend \
-		-H "Content-Type: application/json" \
-		-H "X-Request-ID: demo-001" \
-		-d '{"lat": 52.52, "lon": 13.405, "available_hours": 3, "preferences": ["fitness", "food"]}' | jq .
+	@bash demo.sh
+
+demo-fast:
+	@bash demo-fast.sh
+
+demo-failure:
+	@bash demo-failure.sh
 
 demo-health:
 	@curl -s http://localhost:8080/health | jq .

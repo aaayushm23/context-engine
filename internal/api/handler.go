@@ -59,6 +59,9 @@ func (h *Handler) HandleRecommend(w http.ResponseWriter, r *http.Request) {
 		reqID = req.RequestID
 	}
 
+	// Check for force-rules header (feature flag for demo/testing)
+	forceRules := r.Header.Get("X-Force-Rules") == "true"
+
 	// Build initial context
 	rc := &models.RecommendationContext{
 		RequestID:      reqID,
@@ -72,8 +75,8 @@ func (h *Handler) HandleRecommend(w http.ResponseWriter, r *http.Request) {
 	// Run enrichment pipeline (parallel, resilient)
 	h.pipeline.Run(r.Context(), rc)
 
-	// Generate recommendation (LLM with fallback)
-	resp, err := h.decisionEngine.GenerateRecommendation(r.Context(), rc)
+	// Generate recommendation (LLM with fallback, or forced rules)
+	resp, err := h.decisionEngine.GenerateRecommendation(r.Context(), rc, forceRules)
 	if err != nil {
 		h.logger.Error("recommendation failed", "error", err, "request_id", reqID)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "recommendation failed"})
