@@ -57,13 +57,14 @@ for i in $(seq 0 $(($EXP_COUNT - 1))); do
   echo ""
 done
 
-echo "  ✓ Rule-based recommendation (deterministic)"
+echo "  ✓ Rule-based recommendation (deterministic, low-latency path)"
 echo "  ✓ System returned result despite potential external failures"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "  Source:           $SOURCE"
 echo "  Latency:          ${WALL_MS}ms"
+echo "  SLA target:     <300ms"
 echo "  Signals used:     $SIGNALS_USED"
 echo "  Signals failed:   $SIGNALS_FAILED"
 echo ""

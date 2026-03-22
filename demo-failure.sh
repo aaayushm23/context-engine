@@ -11,7 +11,7 @@ echo "  context-engine  —  failure simulation"
 echo "  Demonstrating graceful degradation"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "  Simulating: LLM unavailable + forced rules"
+echo " Simulating: LLM unavailable (graceful degradation)"
 echo "  Header: X-Force-Rules: true"
 echo ""
 
