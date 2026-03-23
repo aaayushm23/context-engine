@@ -5,10 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
-	"github.com/aaayushm23/context-engine/internal/partner"
 	"github.com/aaayushm23/context-engine/pkg/models"
 )
 
@@ -23,7 +23,7 @@ func NewOllamaClient(baseURL, model string) *OllamaClient {
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second, // overall HTTP timeout (context timeout will cancel sooner)
+			Timeout: 30 * time.Second,
 		},
 	}
 }
@@ -39,14 +39,48 @@ type ollamaResponse struct {
 	Response string `json:"response"`
 }
 
-// ComposeRecommendation asks the LLM to compose a bundled experience
-func (c *OllamaClient) ComposeRecommendation(
+// Candidate is a simplified partner representation passed to the LLM.
+// We decouple from the partner package to avoid circular imports.
+type Candidate struct {
+	Name       string
+	Category   string
+	Tags       []string
+	DistanceKm float64
+}
+
+// RerankResult is the LLM's intelligent selection from candidates.
+type RerankResult struct {
+	Title      string      `json:"title"`
+	Selections []Selection `json:"selections"`
+	Reasoning  string      `json:"reasoning"`
+}
+
+type Selection struct {
+	PartnerName string `json:"partner_name"`
+	Role        string `json:"role"`
+	Reason      string `json:"reason"`
+}
+
+// RerankCandidates is the core LLM function.
+//
+// Architecture: Candidate Generation → Intelligent Reranking
+// (Same pattern as Spotify/Netflix/Uber recommendation systems)
+//
+// The rules engine generates 8-10 candidates (fast, deterministic).
+// The LLM picks the 3-4 that form the BEST coherent experience bundle.
+//
+// What the LLM does that code CANNOT:
+//   - Vibe matching: casual activities pair with casual food, not fine dining
+//   - Flow reasoning: active first → food after makes sense; reverse doesn't
+//   - Combination intelligence: bouldering + craft beer + street food > bouldering + spa + museum
+//   - Contextual nuance: "fitness + food on a rainy evening" → cozy indoor gym + comfort food
+func (c *OllamaClient) RerankCandidates(
 	ctx context.Context,
 	rc *models.RecommendationContext,
-	partners []partner.Partner,
-) (*LLMResult, error) {
+	candidates []Candidate,
+) (*RerankResult, error) {
 
-	prompt := buildPrompt(rc, partners)
+	prompt := buildRerankPrompt(rc, candidates)
 
 	reqBody := ollamaRequest{
 		Model:  c.model,
@@ -77,8 +111,7 @@ func (c *OllamaClient) ComposeRecommendation(
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	// Parse the LLM's JSON response
-	var result LLMResult
+	var result RerankResult
 	if err := json.Unmarshal([]byte(ollamaResp.Response), &result); err != nil {
 		return nil, fmt.Errorf("parse LLM JSON: %w", err)
 	}
@@ -86,56 +119,69 @@ func (c *OllamaClient) ComposeRecommendation(
 	return &result, nil
 }
 
-// LLMResult is the structured output we expect from the LLM
-type LLMResult struct {
-	Title       string          `json:"title"`
-	Experiences []LLMExperience `json:"experiences"`
-}
-
-type LLMExperience struct {
-	PartnerName string `json:"partner_name"`
-	Category    string `json:"category"`
-	Reason      string `json:"reason"`
-}
-
-func buildPrompt(rc *models.RecommendationContext, partners []partner.Partner) string {
-	partnerList := ""
-	for _, p := range partners {
-		partnerList += fmt.Sprintf("- %s (category: %s, tags: %v)\n", p.Name, p.Category, p.SemanticTags)
+func buildRerankPrompt(rc *models.RecommendationContext, candidates []Candidate) string {
+	candidateList := ""
+	for i, c := range candidates {
+		candidateList += fmt.Sprintf("%d. %s\n   Category: %s | Tags: %v | Distance: %.1fkm\n",
+			i+1, c.Name, c.Category, c.Tags, c.DistanceKm)
 	}
 
-	return fmt.Sprintf(`You are a recommendation engine for a mobility platform.
-Given a user's context and available partners, compose a bundled experience.
+	return fmt.Sprintf(`You are an intelligent experience reranker for a mobility platform.
+
+TASK: From the candidate list below, select 3-4 partners that form the BEST coherent experience as a BUNDLE. The combination matters more than individual quality.
+
+THINK ABOUT:
+- Vibe matching: casual activities pair with casual food, premium with premium
+- Flow: what order makes sense for the time of day? (evening = dinner last, morning = brunch last)
+- Proximity: partners close to each other create a smoother experience
+- Complementarity: pick partners that ENHANCE each other, not random variety
+- Include parking if available — the user sent GPS coordinates, they're driving
 
 USER CONTEXT:
 - Location: %s, %s (%.4f, %.4f)
 - Weather: %s, %.0f°C
-- Time: %s (%s, %dh)
-- Available hours: %.0f
+- Time: %s (%s, %dh available)
 - Preferences: %v
 
-AVAILABLE PARTNERS:
+CANDIDATES (pre-filtered by location and relevance):
 %s
-
-RULES:
-1. Select 2-4 partners that form a coherent experience
-2. Include a parking option if available
-3. Consider weather (indoor activities for rain)
-4. Order activities logically (active → food → relaxation)
-5. Each experience needs a reason explaining WHY it fits this context
-
-Respond ONLY with valid JSON in this exact format:
+Respond ONLY with valid JSON:
 {
-  "title": "A short catchy title for the experience",
-  "experiences": [
-    {"partner_name": "exact name from list", "category": "the category", "reason": "why this fits"}
-  ]
+  "title": "Short title capturing the experience vibe (max 6 words)",
+  "selections": [
+    {
+      "partner_name": "exact name from the list above",
+      "role": "primary_activity or wind_down or refuel or logistics",
+      "reason": "Why THIS partner in THIS combination for THIS context"
+    }
+  ],
+  "reasoning": "One sentence: why does this combination work as a coherent experience?"
 }`,
 		rc.City, rc.Neighborhood, rc.Lat, rc.Lon,
 		rc.WeatherCondition, rc.Temperature,
-		rc.TimeSlot, rc.DayOfWeek, rc.Hour,
-		rc.AvailableHours,
+		rc.TimeSlot, rc.DayOfWeek, int(rc.AvailableHours),
 		rc.Preferences,
-		partnerList,
+		candidateList,
 	)
+}
+
+// QuickHaversine for displaying distance in prompts (avoids circular import with partner pkg)
+func QuickHaversine(lat1, lon1, lat2, lon2 float64) float64 {
+	const R = 6371.0
+	dLat := (lat2 - lat1) * math.Pi / 180
+	dLon := (lon2 - lon1) * math.Pi / 180
+	lat1R := lat1 * math.Pi / 180
+	lat2R := lat2 * math.Pi / 180
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1R)*math.Cos(lat2R)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return R * 2 * math.Asin(math.Sqrt(a))
+}
+
+// ComposeRecommendation kept for backward compatibility with existing tests.
+func (c *OllamaClient) ComposeRecommendation(
+	ctx context.Context,
+	rc *models.RecommendationContext,
+	candidates []Candidate,
+) (*RerankResult, error) {
+	return c.RerankCandidates(ctx, rc, candidates)
 }

@@ -3,10 +3,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -16,16 +14,14 @@ import (
 	"github.com/aaayushm23/context-engine/pkg/models"
 )
 
-// mockOllama creates a test HTTP server mimicking Ollama
 func mockOllama(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(handler)
 }
 
 func TestLLMFallback_WhenOllamaTimesOut(t *testing.T) {
-	// Simulate Ollama that takes forever
 	server := mockOllama(t, func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(5 * time.Second) // way too slow
+		time.Sleep(5 * time.Second)
 		w.WriteHeader(200)
 	})
 	defer server.Close()
@@ -38,22 +34,23 @@ func TestLLMFallback_WhenOllamaTimesOut(t *testing.T) {
 		WeatherTag:   "indoor_weather",
 	}
 
-	partners := []partner.Partner{
-		{ID: "1", Name: "Test Gym", Category: "indoor_activity", SemanticTags: []string{"indoor", "fitness"}, Lat: 52.52, Lon: 13.41, GeoFenceRadiusKm: 5.0},
+	candidates := []llm.Candidate{
+		{Name: "Test Gym", Category: "indoor_activity", Tags: []string{"indoor", "fitness"}, DistanceKm: 0.5},
 	}
 
-	// Give only 100ms — Ollama will timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := client.ComposeRecommendation(ctx, rc, partners)
+	_, err := client.RerankCandidates(ctx, rc, candidates)
 
-	// Should have failed
 	if err == nil {
 		t.Fatal("expected timeout error from LLM, got nil")
 	}
 
-	// Now verify fallback works
+	// Verify fallback still works
+	partners := []partner.Partner{
+		{ID: "1", Name: "Test Gym", Category: "indoor_activity", SemanticTags: []string{"indoor", "fitness"}, Lat: 52.52, Lon: 13.41, GeoFenceRadiusKm: 5.0},
+	}
 	rec := RuleBasedFallback(rc, partners)
 	if rec.Source != "rules" {
 		t.Errorf("fallback source = %s, want rules", rec.Source)
@@ -64,7 +61,6 @@ func TestLLMFallback_WhenOllamaTimesOut(t *testing.T) {
 }
 
 func TestLLMFallback_WhenOllamaReturnsGarbage(t *testing.T) {
-	// Simulate Ollama returning invalid JSON
 	server := mockOllama(t, func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{
 			"response": "this is not valid JSON at all {{{",
@@ -78,17 +74,19 @@ func TestLLMFallback_WhenOllamaReturnsGarbage(t *testing.T) {
 		Lat: 52.52, Lon: 13.405,
 		SemanticTags: []string{"food"},
 	}
-	partners := []partner.Partner{
-		{ID: "1", Name: "Café", Category: "food_and_drink", SemanticTags: []string{"food"}, Lat: 52.52, Lon: 13.41, GeoFenceRadiusKm: 5.0},
+	candidates := []llm.Candidate{
+		{Name: "Café", Category: "food_and_drink", Tags: []string{"food"}, DistanceKm: 0.5},
 	}
 
-	_, err := client.ComposeRecommendation(context.Background(), rc, partners)
+	_, err := client.RerankCandidates(context.Background(), rc, candidates)
 
 	if err == nil {
 		t.Fatal("expected JSON parse error, got nil")
 	}
 
-	// Verify fallback handles it
+	partners := []partner.Partner{
+		{ID: "1", Name: "Café", Category: "food_and_drink", SemanticTags: []string{"food"}, Lat: 52.52, Lon: 13.41, GeoFenceRadiusKm: 5.0},
+	}
 	rec := RuleBasedFallback(rc, partners)
 	if len(rec.Experiences) == 0 {
 		t.Error("fallback should return experiences even when LLM returns garbage")
@@ -96,27 +94,28 @@ func TestLLMFallback_WhenOllamaReturnsGarbage(t *testing.T) {
 }
 
 func TestLLMFallback_WhenOllamaIsDown(t *testing.T) {
-	// Point to a server that doesn't exist
 	client := llm.NewOllamaClient("http://localhost:99999", "test-model")
 
 	rc := &models.RecommendationContext{
 		Lat: 52.52, Lon: 13.405,
 		SemanticTags: []string{"fitness"},
 	}
-	partners := []partner.Partner{
-		{ID: "1", Name: "Gym", Category: "indoor_activity", SemanticTags: []string{"fitness"}, Lat: 52.52, Lon: 13.41, GeoFenceRadiusKm: 5.0},
+	candidates := []llm.Candidate{
+		{Name: "Gym", Category: "indoor_activity", Tags: []string{"fitness"}, DistanceKm: 0.5},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err := client.ComposeRecommendation(ctx, rc, partners)
+	_, err := client.RerankCandidates(ctx, rc, candidates)
 
 	if err == nil {
 		t.Fatal("expected connection error, got nil")
 	}
 
-	// Fallback must still work
+	partners := []partner.Partner{
+		{ID: "1", Name: "Gym", Category: "indoor_activity", SemanticTags: []string{"fitness"}, Lat: 52.52, Lon: 13.41, GeoFenceRadiusKm: 5.0},
+	}
 	rec := RuleBasedFallback(rc, partners)
 	if rec.Source != "rules" {
 		t.Errorf("source = %s, want rules", rec.Source)
@@ -126,7 +125,6 @@ func TestLLMFallback_WhenOllamaIsDown(t *testing.T) {
 func TestCircuitBreaker_ProtectsLLM(t *testing.T) {
 	callCount := 0
 
-	// Simulate flaky Ollama — always fails
 	server := mockOllama(t, func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.WriteHeader(500)
@@ -137,45 +135,38 @@ func TestCircuitBreaker_ProtectsLLM(t *testing.T) {
 	cb := resilience.NewCircuitBreaker("llm-test", 2, 5*time.Second)
 
 	rc := &models.RecommendationContext{SemanticTags: []string{"food"}}
-	partners := []partner.Partner{{ID: "1", Name: "Café", Category: "food_and_drink", SemanticTags: []string{"food"}, Lat: 52.52, Lon: 13.41, GeoFenceRadiusKm: 5.0}}
+	candidates := []llm.Candidate{
+		{Name: "Café", Category: "food_and_drink", Tags: []string{"food"}, DistanceKm: 0.5},
+	}
 
-	// Call 3 times — circuit should open after 2 failures
 	for i := 0; i < 3; i++ {
 		cb.Execute(func() error {
-			_, err := client.ComposeRecommendation(context.Background(), rc, partners)
+			_, err := client.RerankCandidates(context.Background(), rc, candidates)
 			return err
 		})
 	}
 
-	// Third call should NOT have reached the server (circuit open)
 	if callCount > 2 {
 		t.Errorf("server called %d times, expected max 2 (circuit should have opened)", callCount)
 	}
 
-	// Circuit should be open
 	if cb.State() != resilience.StateOpen {
 		t.Errorf("circuit state = %v, want Open", cb.State())
 	}
 }
 
 func TestDecisionEngine_PartialContext(t *testing.T) {
-	// Test that recommendation works with partial signals
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	_ = logger
-
 	rc := &models.RecommendationContext{
 		Lat: 52.52, Lon: 13.405,
 		AvailableHours: 2,
 		Preferences:    []string{"food"},
 		SemanticTags:   []string{"food"},
-		// Weather FAILED — no weather tag
-		WeatherTag: "",
-		// But time and location worked
-		TimeSlot:      "weekend_afternoon",
-		City:          "Berlin",
-		Neighborhood:  "Mitte",
-		SignalsUsed:   []models.ContextSignal{"time", "location", "preferences"},
-		SignalsFailed: []models.ContextSignal{"weather"},
+		WeatherTag:     "",
+		TimeSlot:       "weekend_afternoon",
+		City:           "Berlin",
+		Neighborhood:   "Mitte",
+		SignalsUsed:     []models.ContextSignal{"time", "location", "preferences"},
+		SignalsFailed:   []models.ContextSignal{"weather"},
 	}
 
 	partners := []partner.Partner{
@@ -185,12 +176,10 @@ func TestDecisionEngine_PartialContext(t *testing.T) {
 
 	rec := RuleBasedFallback(rc, partners)
 
-	// Should still return a recommendation
 	if len(rec.Experiences) == 0 {
 		t.Fatal("should return experiences even with partial context")
 	}
 
-	// Should report the failed signal
 	foundFailed := false
 	for _, s := range rec.ContextSignalsFailed {
 		if s == "weather" {

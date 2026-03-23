@@ -13,9 +13,15 @@ type scored struct {
 	score   float64
 }
 
-// RuleBasedFallback generates recommendations without the LLM
-// Used when: LLM times out, LLM errors, or circuit breaker is open
-func RuleBasedFallback(rc *models.RecommendationContext, partners []partner.Partner) models.Recommendation {
+// SelectPartners is the PRIMARY partner selection engine.
+// ALL business logic lives here: weather filtering, distance scoring,
+// category diversity, parking inclusion.
+// The LLM NEVER selects partners — it only narrates what this function picks.
+func SelectPartners(rc *models.RecommendationContext, partners []partner.Partner, max int) []partner.Partner {
+	if len(partners) == 0 {
+		return nil
+	}
+
 	// Score each partner
 	var scoredPartners []scored
 	for _, p := range partners {
@@ -29,20 +35,59 @@ func RuleBasedFallback(rc *models.RecommendationContext, partners []partner.Part
 	})
 
 	// Pick top partners with category diversity
-	experiences := selectDiverse(scoredPartners, rc, 3)
+	var selected []partner.Partner
+	usedCategories := map[string]bool{}
 
-	title := fmt.Sprintf("%s in %s", rc.TimeSlot, rc.Neighborhood)
-	if rc.WeatherCondition != "" {
-		title = fmt.Sprintf("%s %s in %s", rc.WeatherCondition, rc.TimeSlot, rc.Neighborhood)
+	for _, sp := range scoredPartners {
+		if len(selected) >= max {
+			break
+		}
+		if usedCategories[sp.partner.Category] {
+			continue
+		}
+		usedCategories[sp.partner.Category] = true
+		selected = append(selected, sp.partner)
 	}
 
-	signalsUsed := []string{}
-	for _, s := range rc.SignalsUsed {
-		signalsUsed = append(signalsUsed, string(s))
+	// Always try to include parking if not already selected
+	if !usedCategories["parking"] {
+		for _, sp := range scoredPartners {
+			if sp.partner.Category == "parking" {
+				selected = append(selected, sp.partner)
+				break
+			}
+		}
 	}
-	signalsFailed := []string{}
-	for _, s := range rc.SignalsFailed {
-		signalsFailed = append(signalsFailed, string(s))
+
+	return selected
+}
+
+// BuildRecommendation creates a complete recommendation from selected partners.
+// Uses deterministic, rule-based reasons. The LLM can override these later with
+// creative narrative — but this version is always valid on its own.
+func BuildRecommendation(rc *models.RecommendationContext, selected []partner.Partner) models.Recommendation {
+	var experiences []models.Experience
+
+	for _, p := range selected {
+		reason := generateReason(rc, p)
+		experiences = append(experiences, models.Experience{
+			PartnerID:   p.ID,
+			PartnerName: p.Name,
+			Category:    p.Category,
+			Reason:      reason,
+			DistanceKm:  partner.HaversineDistance(rc.Lat, rc.Lon, p.Lat, p.Lon),
+		})
+	}
+
+	title := generateTitle(rc)
+
+	signalsUsed := make([]string, len(rc.SignalsUsed))
+	for i, s := range rc.SignalsUsed {
+		signalsUsed[i] = string(s)
+	}
+	signalsFailed := make([]string, len(rc.SignalsFailed))
+	for i, s := range rc.SignalsFailed {
+		signalsFailed[i] = string(s)
 	}
 
 	return models.Recommendation{
@@ -53,6 +98,13 @@ func RuleBasedFallback(rc *models.RecommendationContext, partners []partner.Part
 		ContextSignalsUsed:   signalsUsed,
 		ContextSignalsFailed: signalsFailed,
 	}
+}
+
+// RuleBasedFallback is kept for backward compatibility with tests.
+// It calls SelectPartners + BuildRecommendation internally.
+func RuleBasedFallback(rc *models.RecommendationContext, partners []partner.Partner) models.Recommendation {
+	selected := SelectPartners(rc, partners, 3)
+	return BuildRecommendation(rc, selected)
 }
 
 func scorePartner(rc *models.RecommendationContext, p partner.Partner) float64 {
@@ -92,44 +144,40 @@ func scorePartner(rc *models.RecommendationContext, p partner.Partner) float64 {
 	return score
 }
 
-// selectDiverse picks partners ensuring category diversity
-func selectDiverse(scoredPartners []scored, rc *models.RecommendationContext, max int) []models.Experience {
-	var experiences []models.Experience
-	usedCategories := map[string]bool{}
-
-	// First pass: one per category
-	for _, sp := range scoredPartners {
-		if len(experiences) >= max {
-			break
-		}
-		if usedCategories[sp.partner.Category] {
-			continue
-		}
-		usedCategories[sp.partner.Category] = true
-		experiences = append(experiences, models.Experience{
-			PartnerID:   sp.partner.ID,
-			PartnerName: sp.partner.Name,
-			Category:    sp.partner.Category,
-			Reason:      fmt.Sprintf("Top match for %s (score: %.0f%%)", sp.partner.Category, sp.score*100),
-			DistanceKm:  partner.HaversineDistance(rc.Lat, rc.Lon, sp.partner.Lat, sp.partner.Lon),
-		})
+func generateTitle(rc *models.RecommendationContext) string {
+	title := rc.TimeSlot
+	if rc.WeatherCondition != "" {
+		title = rc.WeatherCondition + " " + title
 	}
-
-	// Always try to include parking
-	if !usedCategories["parking"] && len(experiences) < max+1 {
-		for _, sp := range scoredPartners {
-			if sp.partner.Category == "parking" {
-				experiences = append(experiences, models.Experience{
-					PartnerID:   sp.partner.ID,
-					PartnerName: sp.partner.Name,
-					Category:    "parking",
-					Reason:      "Nearest available parking",
-					DistanceKm:  partner.HaversineDistance(rc.Lat, rc.Lon, sp.partner.Lat, sp.partner.Lon),
-				})
-				break
-			}
-		}
+	if rc.Neighborhood != "" {
+		title += " in " + rc.Neighborhood
 	}
+	return title
+}
 
-	return experiences
+func generateReason(rc *models.RecommendationContext, p partner.Partner) string {
+	dist := partner.HaversineDistance(rc.Lat, rc.Lon, p.Lat, p.Lon)
+
+	switch p.Category {
+	case "indoor_activity":
+		if rc.WeatherTag == "indoor_weather" {
+			return fmt.Sprintf("Indoor activity — ideal for %s weather (%.1fkm away)", rc.WeatherCondition, dist)
+		}
+		return fmt.Sprintf("Indoor activity nearby (%.1fkm away)", dist)
+	case "outdoor_activity":
+		if rc.WeatherTag == "outdoor_weather" {
+			return fmt.Sprintf("Outdoor activity — great for %s weather (%.1fkm away)", rc.WeatherCondition, dist)
+		}
+		return fmt.Sprintf("Outdoor activity (%.1fkm away)", dist)
+	case "food_and_drink":
+		return fmt.Sprintf("Food and drinks nearby (%.1fkm away)", dist)
+	case "parking":
+		return fmt.Sprintf("Covered parking (%.1fkm away)", dist)
+	case "wellness":
+		return fmt.Sprintf("Relaxation and wellness (%.1fkm away)", dist)
+	case "culture":
+		return fmt.Sprintf("Culture and arts (%.1fkm away)", dist)
+	default:
+		return fmt.Sprintf("Recommended based on your preferences (%.1fkm away)", dist)
+	}
 }
