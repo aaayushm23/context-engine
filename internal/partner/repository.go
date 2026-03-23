@@ -18,22 +18,37 @@ func NewRepository(db *sql.DB) *Repository {
 }
 
 // MatchByTags finds partners whose semantic tags overlap with the given tags
+// and are within geographic range, ordered by tag relevance
 func (r *Repository) MatchByTags(ctx context.Context, tags []string, lat, lon float64, limit int) ([]Partner, error) {
+	// We filter by a bounding box first (fast, index-friendly),
+	// then rank by semantic tag overlap.
+	// The bounding box is ~50km which covers any realistic urban recommendation radius.
+	// At scale, this would use PostGIS ST_DWithin with a GiST index for O(log N) lookups.
+	const maxDistKm = 50.0
+	latDelta := maxDistKm / 111.0 // ~1 degree latitude = 111km
+	lonDelta := maxDistKm / (111.0 * math.Cos(lat*math.Pi/180.0))
+
 	query := `
 		SELECT id, name, category, semantic_tags, lat, lon, geo_fence_radius_km, active, created_at
 		FROM partners
 		WHERE active = true
 		  AND semantic_tags && $1
+		  AND lat BETWEEN $2 AND $3
+		  AND lon BETWEEN $4 AND $5
 		ORDER BY
-			-- Rank by number of overlapping tags (more overlap = better match)
 			array_length(
 				ARRAY(SELECT unnest(semantic_tags) INTERSECT SELECT unnest($1::text[])),
 				1
 			) DESC NULLS LAST
-		LIMIT $2
+		LIMIT $6
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, pq.Array(tags), limit)
+	rows, err := r.db.QueryContext(ctx, query,
+		pq.Array(tags),
+		lat-latDelta, lat+latDelta,
+		lon-lonDelta, lon+lonDelta,
+		limit,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("match partners: %w", err)
 	}
@@ -63,7 +78,7 @@ func (r *Repository) GetAll(ctx context.Context) ([]Partner, error) {
 
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get all partners: %w", err)
 	}
 	defer rows.Close()
 
@@ -77,7 +92,7 @@ func (r *Repository) GetAll(ctx context.Context) ([]Partner, error) {
 			&p.Active, &p.CreatedAt,
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan partner: %w", err)
 		}
 		partners = append(partners, p)
 	}
@@ -100,7 +115,7 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Partner, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get partner: %w", err)
 	}
 	return &p, nil
 }
@@ -116,7 +131,7 @@ func (r *Repository) Create(ctx context.Context, p *Partner) error {
 	).Scan(&p.ID, &p.CreatedAt)
 }
 
-// Haversine distance in km (used for geo-fence filtering)
+// HaversineDistance calculates the distance in km between two lat/lon points
 func HaversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	const R = 6371.0
 	dLat := (lat2 - lat1) * math.Pi / 180

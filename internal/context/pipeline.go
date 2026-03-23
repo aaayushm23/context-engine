@@ -46,8 +46,8 @@ func NewPipeline(
 	}
 }
 
-// Run executes all enrichers in parallel, collecting results
-// Failed enrichers are recorded but don't stop the pipeline
+// Run executes all enrichers in parallel, collecting results.
+// Failed enrichers are recorded but don't stop the pipeline.
 func (p *Pipeline) Run(ctx context.Context, rc *models.RecommendationContext) {
 	stageCtx, cancel := p.budget.StageContext(ctx, "context_fetch")
 	defer cancel()
@@ -84,32 +84,35 @@ func (p *Pipeline) Run(ctx context.Context, rc *models.RecommendationContext) {
 
 	wg.Wait()
 
-	// Build semantic tags from collected context
+	// Build semantic tags from collected context — APPEND to existing, don't override
 	p.buildSemanticTags(rc)
 }
 
 // buildSemanticTags derives matching tags from enriched context
+// and appends them to any existing tags (e.g., from user preferences)
 func (p *Pipeline) buildSemanticTags(rc *models.RecommendationContext) {
-	tags := []string{}
+	var inferred []string
 
 	// Weather-based tags
 	switch rc.WeatherTag {
 	case "indoor_weather":
-		tags = append(tags, "indoor", "rainy_day", "covered")
+		inferred = append(inferred, "indoor", "rainy_day", "covered")
 	case "outdoor_weather":
-		tags = append(tags, "outdoor", "open_air", "nature")
+		inferred = append(inferred, "outdoor", "open_air", "nature")
 	}
 
 	// Time-based tags
 	switch rc.TimeSlot {
 	case "weekend_afternoon", "weekend_morning":
-		tags = append(tags, "weekend", "leisure")
+		inferred = append(inferred, "weekend", "leisure")
 	case "weekday_evening":
-		tags = append(tags, "after_work", "evening")
+		inferred = append(inferred, "after_work", "evening")
 	}
 
-	// Preference-based tags
-	tags = append(tags, rc.Preferences...)
+	// Append user preferences (already expanded by PreferenceEnricher)
+	inferred = append(inferred, rc.Preferences...)
 
-	rc.SemanticTags = tags
+	// APPEND to existing semantic tags instead of overriding
+	// This preserves any tags that were set before the pipeline ran
+	rc.SemanticTags = append(rc.SemanticTags, inferred...)
 }

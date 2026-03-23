@@ -64,6 +64,25 @@ func (c *RedisCache) SetIdempotency(ctx context.Context, key string, value inter
 	return c.Set(ctx, key, value, ttl)
 }
 
+// AcquireIdempotencyLock attempts to acquire a processing lock for a request_id.
+// Uses SETNX (SetNX) — only succeeds if the key doesn't exist.
+// Returns true if lock was acquired (this request should proceed).
+// Returns false if another request is already processing this ID.
+func (c *RedisCache) AcquireIdempotencyLock(ctx context.Context, requestID string, ttl time.Duration) (bool, error) {
+	lockKey := "lock:" + requestID
+	ok, err := c.client.SetNX(ctx, lockKey, "processing", ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("acquire idempotency lock: %w", err)
+	}
+	return ok, nil
+}
+
+// ReleaseIdempotencyLock releases the processing lock
+func (c *RedisCache) ReleaseIdempotencyLock(ctx context.Context, requestID string) {
+	lockKey := "lock:" + requestID
+	c.client.Del(ctx, lockKey)
+}
+
 // ContentHash generates a cache key from context data
 func ContentHash(data interface{}) string {
 	bytes, _ := json.Marshal(data)

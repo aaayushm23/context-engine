@@ -2,6 +2,8 @@ package resilience
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -95,7 +97,7 @@ func TestCircuitBreaker_RecoveryAfterTimeout(t *testing.T) {
 	// Wait for recovery timeout
 	time.Sleep(150 * time.Millisecond)
 
-	// Next call should go through (half-open) and succeed
+	// Next call should go through (half-open probe) and succeed
 	err := cb.Execute(func() error { return nil })
 	if err != nil {
 		t.Errorf("expected success in half-open, got %v", err)
@@ -123,5 +125,41 @@ func TestCircuitBreaker_SuccessResetsFailureCount(t *testing.T) {
 
 	if cb.State() != StateClosed {
 		t.Error("circuit should still be closed — success should have reset failure count")
+	}
+}
+
+// --- Thundering herd prevention test ---
+
+func TestCircuitBreaker_HalfOpenSingleProbe(t *testing.T) {
+	cb := NewCircuitBreaker("test", 2, 100*time.Millisecond)
+
+	// Trip the breaker
+	cb.Execute(func() error { return errors.New("fail") })
+	cb.Execute(func() error { return errors.New("fail") })
+
+	// Wait for recovery
+	time.Sleep(150 * time.Millisecond)
+
+	// Launch 10 concurrent requests — only 1 should get through
+	var callCount atomic.Int32
+	var wg sync.WaitGroup
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cb.Execute(func() error {
+				callCount.Add(1)
+				time.Sleep(50 * time.Millisecond) // simulate slow probe
+				return nil
+			})
+		}()
+	}
+
+	wg.Wait()
+
+	got := callCount.Load()
+	if got != 1 {
+		t.Errorf("expected exactly 1 probe request, got %d (thundering herd!)", got)
 	}
 }

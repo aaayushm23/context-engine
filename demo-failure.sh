@@ -15,6 +15,7 @@ echo " Simulating: LLM unavailable (graceful degradation)"
 echo "  Header: X-Force-Rules: true"
 echo ""
 
+
 START_MS=$(python3 -c 'import time; print(int(time.time()*1000))')
 
 RESPONSE=$(curl -s -X POST "$ENDPOINT" \

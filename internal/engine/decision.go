@@ -45,9 +45,9 @@ func (de *DecisionEngine) GenerateRecommendation(
 	forceRules bool,
 ) (*models.RecommendationResponse, error) {
 	start := time.Now()
-
-	// 1. Check idempotency — return cached result if same request
 	idemKey := "idem:" + rc.RequestID
+
+	// 1. Check idempotency — return cached result if already processed
 	var cachedResp models.RecommendationResponse
 	exists, err := de.cache.CheckIdempotency(ctx, idemKey)
 	if err == nil && exists {
@@ -57,7 +57,29 @@ func (de *DecisionEngine) GenerateRecommendation(
 		return &cachedResp, nil
 	}
 
-	// 2. Check LLM response cache (content-hash based)
+	// 2. Acquire SETNX lock — prevents duplicate processing if same request_id
+	//    arrives concurrently (e.g., user double-clicks)
+	acquired, lockErr := de.cache.AcquireIdempotencyLock(ctx, rc.RequestID, 30*time.Second)
+	if lockErr != nil {
+		de.logger.Warn("failed to acquire idempotency lock", "error", lockErr, "request_id", rc.RequestID)
+		// Continue anyway — lock failure shouldn't block the request
+	} else if !acquired {
+		// Another request with same ID is already processing
+		// Wait briefly and check if result is available
+		time.Sleep(100 * time.Millisecond)
+		if exists, _ := de.cache.CheckIdempotency(ctx, idemKey); exists {
+			de.cache.Get(ctx, idemKey, &cachedResp)
+			cachedResp.Meta.FromCache = true
+			return &cachedResp, nil
+		}
+		// If still not available, proceed anyway rather than blocking
+		de.logger.Info("idempotency lock held by another request, proceeding", "request_id", rc.RequestID)
+	} else {
+		// We acquired the lock — release it when done
+		defer de.cache.ReleaseIdempotencyLock(ctx, rc.RequestID)
+	}
+
+	// 3. Check LLM response cache (content-hash based)
 	cacheKey := cache.ContentHash(struct {
 		Tags     []string
 		City     string
@@ -70,11 +92,12 @@ func (de *DecisionEngine) GenerateRecommendation(
 		if hit, _ := de.cache.Get(ctx, cacheKey, &cachedRec); hit {
 			de.logger.Info("LLM cache hit", "request_id", rc.RequestID)
 			resp := de.buildResponse(rc, cachedRec, time.Since(start), []string{"llm_response"})
+			de.cache.SetIdempotency(ctx, idemKey, resp, 5*time.Minute)
 			return resp, nil
 		}
 	}
 
-	// 3. Match partners from Postgres
+	// 4. Match partners from Postgres
 	matchCtx, matchCancel := de.budget.StageContext(ctx, "partner_match")
 	defer matchCancel()
 
@@ -84,7 +107,7 @@ func (de *DecisionEngine) GenerateRecommendation(
 		matchedPartners = []partner.Partner{} // continue with empty
 	}
 
-	// 4. Try LLM, fall back to rules
+	// 5. Try LLM, fall back to rules
 	var recommendation models.Recommendation
 	var cacheHits []string
 
@@ -123,10 +146,10 @@ func (de *DecisionEngine) GenerateRecommendation(
 		de.cache.Set(ctx, cacheKey, recommendation, 30*time.Minute)
 	}
 
-	// 5. Build final response
+	// 6. Build final response
 	resp := de.buildResponse(rc, recommendation, time.Since(start), cacheHits)
 
-	// 6. Store for idempotency
+	// 7. Store for idempotency
 	de.cache.SetIdempotency(ctx, idemKey, resp, 5*time.Minute)
 
 	return resp, nil
