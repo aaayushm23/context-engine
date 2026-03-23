@@ -4,7 +4,84 @@ A real-time context-aware partner recommendation service built in Go. Given a us
 
 ## Architecture
 
-![Architecture](docs/architecture.png)
+flowchart TD
+    %% External Entities
+    Client([Client / App])
+    IoT([IoT Sensors / Vehicles])
+    
+    %% API & Edge
+    subgraph "API & Resilience Layer"
+        API[API Router & Middleware\n(Request ID, Timeout Budget)]
+        Cache[(Redis 7 Cache\nIdempotency)]
+    end
+
+    %% Ingestion
+    subgraph "IoT Ingestion"
+        MQTT[Mosquitto Broker]
+        Listener[MQTT Listener]
+    end
+
+    %% Core Pipeline
+    subgraph "Context Orchestration"
+        Pipeline{Context Pipeline\n(Parallel Execution)}
+        Weather[Weather Enricher]
+        Time[Time Enricher]
+        Location[Location Enricher]
+        Prefs[Preference Enricher]
+    end
+
+    %% Data & Decision
+    subgraph "Matching & Decision"
+        DB[(PostgreSQL 16\nPartner Registry)]
+        Engine[Decision Engine]
+        CB{Circuit Breaker}
+        LLM[Ollama Llama 3.1 8B\n(Primary)]
+        Rules[Rule-Based Fallback\n(Secondary)]
+    end
+
+    %% Observability
+    subgraph "Event & Observability"
+        PubSub[Redis Pub/Sub]
+        Consumer[Analytics Consumer]
+        Grafana[Grafana Dashboard]
+    end
+
+    %% Flow: Edge & Cache
+    Client -->|POST /v1/recommend| API
+    API <-->|Check Request ID| Cache
+    Cache -.->|Cache Hit (Fast Path)| Client
+
+    %% Flow: Context & IoT
+    IoT -->|MQTT Signals| MQTT --> Listener --> Pipeline
+    API -->|Cache Miss| Pipeline
+    
+    Pipeline --> Weather & Time & Location & Prefs
+    Weather & Time & Location & Prefs --> DB
+    DB --> Engine
+
+    %% Flow: Decision & Graceful Degradation
+    Engine --> CB
+    CB -- "Budget OK" --> LLM
+    CB -- "Timeout / Error" --> Rules
+    LLM -.->|"Fails/Garbage JSON"| Rules
+    
+    %% Flow: Response & Analytics
+    LLM --> Formatter[Response Aggregator]
+    Rules --> Formatter
+    
+    Formatter -->|Write Result| Cache
+    Formatter -->|Publish Event| PubSub
+    Formatter --> Client
+
+    PubSub --> Consumer --> Grafana
+
+    %% Styling
+    classDef primary fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef db fill:#bbf,stroke:#333,stroke-width:1px;
+    classDef ai fill:#bfb,stroke:#333,stroke-width:2px;
+    class Cache,DB db;
+    class API,Pipeline,Engine primary;
+    class LLM ai;
 
 ## Key design decisions
 
