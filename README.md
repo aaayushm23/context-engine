@@ -2,86 +2,67 @@
 
 A real-time context-aware partner recommendation service built in Go. Given a user's location, weather, time, and preferences, the engine matches against semantically tagged partners, composes bundled experiences using an LLM, and returns personalized recommendations with sub-300ms production latency.
 
-## Architecture
+---
 
+## 🏗️ Architecture
+
+```mermaid
 flowchart TD
-    %% External Entities
-    Client([Client / App])
-    IoT([IoT Sensors / Vehicles])
-    
-    %% API & Edge
-    subgraph "API & Resilience Layer"
-        API[API Router & Middleware\n(Request ID, Timeout Budget)]
-        Cache[(Redis 7 Cache\nIdempotency)]
-    end
 
-    %% Ingestion
-    subgraph "IoT Ingestion"
-        MQTT[Mosquitto Broker]
-        Listener[MQTT Listener]
-    end
+A[Client App]
 
-    %% Core Pipeline
-    subgraph "Context Orchestration"
-        Pipeline{Context Pipeline\n(Parallel Execution)}
-        Weather[Weather Enricher]
-        Time[Time Enricher]
-        Location[Location Enricher]
-        Prefs[Preference Enricher]
-    end
+subgraph API_Layer
+B[Router + Middleware]
+end
 
-    %% Data & Decision
-    subgraph "Matching & Decision"
-        DB[(PostgreSQL 16\nPartner Registry)]
-        Engine[Decision Engine]
-        CB{Circuit Breaker}
-        LLM[Ollama Llama 3.1 8B\n(Primary)]
-        Rules[Rule-Based Fallback\n(Secondary)]
-    end
+subgraph Context_Pipeline
+C[Context Orchestrator]
+C1[Weather]
+C2[Time]
+C3[Location]
+C4[Preferences]
+end
 
-    %% Observability
-    subgraph "Event & Observability"
-        PubSub[Redis Pub/Sub]
-        Consumer[Analytics Consumer]
-        Grafana[Grafana Dashboard]
-    end
+subgraph Decision_Engine
+D[Decision Core]
+E[LLM Ollama]
+F[Rule Engine]
+end
 
-    %% Flow: Edge & Cache
-    Client -->|POST /v1/recommend| API
-    API <-->|Check Request ID| Cache
-    Cache -.->|Cache Hit (Fast Path)| Client
+subgraph Data_Layer
+G[Partner Service]
+H[(PostgreSQL)]
+I[(Redis Cache)]
+end
 
-    %% Flow: Context & IoT
-    IoT -->|MQTT Signals| MQTT --> Listener --> Pipeline
-    API -->|Cache Miss| Pipeline
-    
-    Pipeline --> Weather & Time & Location & Prefs
-    Weather & Time & Location & Prefs --> DB
-    DB --> Engine
+subgraph Observability
+J[Event Consumer]
+K[Grafana]
+end
 
-    %% Flow: Decision & Graceful Degradation
-    Engine --> CB
-    CB -- "Budget OK" --> LLM
-    CB -- "Timeout / Error" --> Rules
-    LLM -.->|"Fails/Garbage JSON"| Rules
-    
-    %% Flow: Response & Analytics
-    LLM --> Formatter[Response Aggregator]
-    Rules --> Formatter
-    
-    Formatter -->|Write Result| Cache
-    Formatter -->|Publish Event| PubSub
-    Formatter --> Client
+L[MQTT]
 
-    PubSub --> Consumer --> Grafana
+A --> B --> C
 
-    %% Styling
-    classDef primary fill:#f9f,stroke:#333,stroke-width:2px;
-    classDef db fill:#bbf,stroke:#333,stroke-width:1px;
-    classDef ai fill:#bfb,stroke:#333,stroke-width:2px;
-    class Cache,DB db;
-    class API,Pipeline,Engine primary;
-    class LLM ai;
+C --> C1
+C --> C2
+C --> C3
+C --> C4
+
+C --> D
+
+D --> E
+D --> F
+
+D --> G --> H
+D --> I
+
+I --> J --> K
+
+L --> C
+```
+
+---
 
 ## Key design decisions
 
@@ -96,7 +77,7 @@ flowchart TD
 ## Tech stack
 
 | Component  | Technology            | Purpose                               |
-|------------|-----------------------|---------------------------------------|
+| ---------- | --------------------- | ------------------------------------- |
 | Language   | Go                    | Backend service                       |
 | Database   | PostgreSQL 16         | Partner registry, recommendations log |
 | Cache      | Redis 7               | Response cache, Pub/Sub, idempotency  |
@@ -109,11 +90,11 @@ flowchart TD
 
 ### Prerequisites
 
-- Go 1.22+
-- Docker Desktop
-- Ollama (`brew install ollama`)
-- jq (`brew install jq`)
-- psql (`brew install libpq && brew link --force libpq`)
+* Go 1.22+
+* Docker Desktop
+* Ollama (`brew install ollama`)
+* jq (`brew install jq`)
+* psql (`brew install libpq && brew link --force libpq`)
 
 ### Setup
 
@@ -163,6 +144,7 @@ go test ./... -v
 Generate a context-aware recommendation.
 
 **Request:**
+
 ```json
 {
   "lat": 52.52,
@@ -175,11 +157,12 @@ Generate a context-aware recommendation.
 **Headers:**
 
 | Header          | Description                                            |
-|-----------------|--------------------------------------------------------|
+| --------------- | ------------------------------------------------------ |
 | `X-Request-ID`  | Client-provided request ID (auto-generated if missing) |
-| `X-Force-Rules` | Set to `true` to skip LLM, use rule-based scoring     |
+| `X-Force-Rules` | Set to `true` to skip LLM, use rule-based scoring      |
 
 **Response:**
+
 ```json
 {
   "request_id": "demo-001",
@@ -224,7 +207,7 @@ Service health check (Postgres, Redis connectivity).
 Runtime metrics: total recommendations, LLM vs fallback ratio, average latency.
 
 ## Project structure
-
+ 
 ```
 context-engine/
 ├── cmd/server/main.go              # Entry point, dependency injection, graceful shutdown
@@ -277,11 +260,12 @@ context-engine/
 ├── Makefile                       # build, run, test, migrate, seed, demo
 └── .env.example                   # Configuration reference
 ```
+ 
 
 ## Testing
-
+ 
 30 tests covering unit logic, failure scenarios, and integration:
-
+ 
 ```
 ok   internal/api          — middleware (request ID, panic recovery)
 ok   internal/context      — enrichers (time, location, preferences, weather codes)
@@ -289,72 +273,73 @@ ok   internal/engine       — decision engine failures + rule-based scoring
 ok   internal/partner      — Haversine distance (accuracy + symmetry)
 ok   internal/resilience   — circuit breaker + timeout budget
 ```
-
+ 
 **Failure tests** (the most important ones):
 - LLM timeout → verify fallback returns valid recommendation
 - LLM returns garbage JSON → system doesn't crash, falls back
 - LLM completely unreachable → connection error caught, fallback works
 - Circuit breaker → after 2 failures, 3rd call never reaches server
 - Partial context → weather fails, recommendation still returned with degraded personalization
-
+ 
 ```bash
 # Run all tests
 go test ./... -v
-
+ 
 # Run only failure tests
 go test ./internal/engine/... -v -run "Fallback"
-
+ 
 # Run with race detection
 go test ./... -race
-
+ 
 # Run with coverage
 go test ./... -cover
 ```
 
 ## Configuration
 
-| Variable       | Default                                                                  | Description         |
-|----------------|--------------------------------------------------------------------------|---------------------|
-| `DATABASE_URL` | `postgres://postgres:secret@localhost:5432/contextengine?sslmode=disable` | Postgres connection |
-| `REDIS_ADDR`   | `localhost:6379`                                                         | Redis address       |
-| `OLLAMA_URL`   | `http://localhost:11434`                                                 | Ollama API endpoint |
-| `OLLAMA_MODEL` | `llama3.1:8b`                                                           | LLM model name      |
-| `PORT`         | `8080`                                                                   | HTTP server port    |
+| Variable     | Default                                                                 |
+| ------------ | ----------------------------------------------------------------------- |
+| DATABASE_URL | postgres://postgres:secret@localhost:5432/contextengine?sslmode=disable |
+| REDIS_ADDR   | localhost:6379                                                          |
+| OLLAMA_URL   | http://localhost:11434                                                  |
+| OLLAMA_MODEL | llama3.1:8b                                                             |
+| PORT         | 8080                                                                    |
 
 ## Scaling to production — what I'd change and why
-
+ 
 The current implementation is designed to be correct, testable, and demonstrably resilient. Below are the architectural decisions where it makes deliberate tradeoffs, and the enterprise-grade alternatives I would adopt at scale.
-
+ 
 ### 1. Geospatial: Haversine → PostGIS
-
+ 
 **Current approach:** Partners are fetched from Postgres and distances are calculated using the Haversine formula in Go. This works well for the current dataset of 15 Berlin-area partners.
-
+ 
 **At scale:** With hundreds of thousands of partners, computing distance for every row becomes an O(N) CPU bottleneck. PostGIS extends Postgres with spatial indexes (GiST), enabling O(log N) nearest-neighbor lookups. A query like `ST_DWithin(geom, ST_MakePoint(13.405, 52.52)::geography, 5000)` finds all partners within 5km using the spatial index, without scanning the full table.
-
+ 
 ### 2. LLM: Synchronous call → pre-computed semantic search
-
+ 
 **Current approach:** The LLM is invoked synchronously during the HTTP request. If it exceeds the timeout budget, the system falls back to rule-based scoring. This guarantees a response but limits LLM reasoning time.
-
+ 
 **At scale:** Getting a local 8B parameter model to produce structured JSON within 300ms is unreliable. A better enterprise approach is to pre-compute recommendation bundles offline. The LLM runs in the background continuously, generating experience bundles like "A perfect rainy day in Berlin-Mitte" and converting them into vector embeddings. At request time, the user's context is embedded and a vector database (pgvector or Pinecone) performs a cosine similarity lookup in under 10ms. This gives LLM-quality reasoning with database-speed latency.
-
+ 
 ### 3. Events: Redis Pub/Sub → Redis Streams or Kafka
-
+ 
 **Current approach:** Analytics events are published via Redis Pub/Sub to a background consumer. This is simple and fast, but Pub/Sub is fire-and-forget — if the consumer is offline when an event is published, that event is permanently lost.
-
+ 
 **At scale:** Redis Streams (or Kafka, RabbitMQ) provide message persistence and consumer groups. If the analytics consumer crashes and restarts 30 seconds later, it picks up exactly where it left off. No lost events, no gaps in metrics. The API stays identical: `XADD` instead of `PUBLISH`.
-
+ 
 ### 4. Response delivery: Synchronous HTTP → Server-Sent Events
-
+ 
 **Current approach:** The HTTP request blocks until the pipeline completes or the timeout triggers. With the rule-based path this is fast (~200ms), but the LLM path can take several seconds locally.
-
+ 
 **At scale:** For highly personalized AI recommendations, users are typically willing to wait 2-3 seconds as long as they see progress. Server-Sent Events (SSE) allow the backend to stream status updates as each pipeline stage completes: `{"status": "Fetching weather..."}` → `{"status": "Matching partners..."}` → `{"status": "AI composing experience..."}` → `{"result": {...}}`. This improves perceived performance and gives the LLM the time it needs.
-
+ 
 ### 5. Observability: Structured logs → OpenTelemetry
-
+ 
 **Current approach:** Every request is logged with `log/slog` carrying a `request_id` for traceability. This is solid for debugging individual requests.
-
+ 
 **At scale:** With dozens of concurrent goroutines, timeouts, and fallbacks, structured logs alone make it hard to visualize where time is spent. OpenTelemetry distributed tracing would produce a Gantt chart for each request, showing exactly how many milliseconds the weather API, partner matching, and LLM each consumed. Combined with Grafana Tempo, this makes performance debugging trivial — you can see at a glance that the weather enricher took 95ms while the LLM was cancelled at 120ms.
-
+ 
 ## License
-
+ 
 MIT
+ 
