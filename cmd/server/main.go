@@ -82,11 +82,10 @@ func main() {
 
 	// Start analytics consumer
 	consumerCtx, consumerCancel := context.WithCancel(context.Background())
-	defer consumerCancel()
 	analytics.Start(consumerCtx)
 
-	// HTTP handler
-	handler := api.NewHandler(pipeline, decisionEngine, partnerRepo, publisher, analytics, logger)
+	// HTTP handler — cache passed for health checks
+	handler := api.NewHandler(pipeline, decisionEngine, partnerRepo, redisCache, publisher, analytics, logger)
 	router := api.NewRouter(handler, logger, 15*time.Second)
 
 	// HTTP server

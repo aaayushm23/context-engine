@@ -17,15 +17,20 @@ func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
 }
 
+// Ping checks database connectivity — used by the health endpoint
+func (r *Repository) Ping(ctx context.Context) error {
+	return r.db.PingContext(ctx)
+}
+
 // MatchByTags finds partners whose semantic tags overlap with the given tags
 // and are within geographic range, ordered by tag relevance
 func (r *Repository) MatchByTags(ctx context.Context, tags []string, lat, lon float64, limit int) ([]Partner, error) {
-	// We filter by a bounding box first (fast, index-friendly),
+	// Bounding box filter first (fast, index-friendly),
 	// then rank by semantic tag overlap.
-	// The bounding box is ~50km which covers any realistic urban recommendation radius.
-	// At scale, this would use PostGIS ST_DWithin with a GiST index for O(log N) lookups.
+	// ~50km covers any realistic urban recommendation radius.
+	// At scale: PostGIS ST_DWithin with GiST index for O(log N) lookups.
 	const maxDistKm = 50.0
-	latDelta := maxDistKm / 111.0 // ~1 degree latitude = 111km
+	latDelta := maxDistKm / 111.0
 	lonDelta := maxDistKm / (111.0 * math.Cos(lat*math.Pi/180.0))
 
 	query := `

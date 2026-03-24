@@ -15,11 +15,11 @@ type AnalyticsConsumer struct {
 	client *redis.Client
 	logger *slog.Logger
 
-	// Simple in-memory counters (in production, use Prometheus)
-	TotalRecommendations atomic.Int64
-	LLMCount             atomic.Int64
-	RulesCount           atomic.Int64
-	TotalLatencyMs       atomic.Int64
+	// Unexported — only accessible via Stats() method
+	totalRecommendations atomic.Int64
+	llmCount             atomic.Int64
+	rulesCount           atomic.Int64
+	totalLatencyMs       atomic.Int64
 }
 
 func NewAnalyticsConsumer(client *redis.Client, logger *slog.Logger) *AnalyticsConsumer {
@@ -51,14 +51,14 @@ func (ac *AnalyticsConsumer) Start(ctx context.Context) {
 }
 
 func (ac *AnalyticsConsumer) processEvent(event models.RecommendationEvent) {
-	ac.TotalRecommendations.Add(1)
-	ac.TotalLatencyMs.Add(event.LatencyMs)
+	ac.totalRecommendations.Add(1)
+	ac.totalLatencyMs.Add(event.LatencyMs)
 
 	switch event.Source {
 	case "llm":
-		ac.LLMCount.Add(1)
+		ac.llmCount.Add(1)
 	case "rules":
-		ac.RulesCount.Add(1)
+		ac.rulesCount.Add(1)
 	}
 
 	ac.logger.Info("recommendation tracked",
@@ -71,16 +71,16 @@ func (ac *AnalyticsConsumer) processEvent(event models.RecommendationEvent) {
 
 // Stats returns current analytics for the /metrics endpoint
 func (ac *AnalyticsConsumer) Stats() map[string]interface{} {
-	total := ac.TotalRecommendations.Load()
+	total := ac.totalRecommendations.Load()
 	avgLatency := int64(0)
 	if total > 0 {
-		avgLatency = ac.TotalLatencyMs.Load() / total
+		avgLatency = ac.totalLatencyMs.Load() / total
 	}
 
 	return map[string]interface{}{
 		"total_recommendations": total,
-		"llm_count":             ac.LLMCount.Load(),
-		"rules_fallback_count":  ac.RulesCount.Load(),
+		"llm_count":             ac.llmCount.Load(),
+		"rules_fallback_count":  ac.rulesCount.Load(),
 		"avg_latency_ms":        avgLatency,
 	}
 }

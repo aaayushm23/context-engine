@@ -1,11 +1,11 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 
+	"github.com/aaayushm23/context-engine/internal/cache"
 	contextpkg "github.com/aaayushm23/context-engine/internal/context"
 	"github.com/aaayushm23/context-engine/internal/engine"
 	"github.com/aaayushm23/context-engine/internal/events"
@@ -17,6 +17,7 @@ type Handler struct {
 	pipeline       *contextpkg.Pipeline
 	decisionEngine *engine.DecisionEngine
 	partnerRepo    *partner.Repository
+	cache          *cache.RedisCache
 	publisher      *events.Publisher
 	analytics      *events.AnalyticsConsumer
 	logger         *slog.Logger
@@ -26,6 +27,7 @@ func NewHandler(
 	pipeline *contextpkg.Pipeline,
 	decisionEngine *engine.DecisionEngine,
 	partnerRepo *partner.Repository,
+	cache *cache.RedisCache,
 	publisher *events.Publisher,
 	analytics *events.AnalyticsConsumer,
 	logger *slog.Logger,
@@ -34,6 +36,7 @@ func NewHandler(
 		pipeline:       pipeline,
 		decisionEngine: decisionEngine,
 		partnerRepo:    partnerRepo,
+		cache:          cache,
 		publisher:      publisher,
 		analytics:      analytics,
 		logger:         logger,
@@ -69,7 +72,6 @@ func (h *Handler) HandleRecommend(w http.ResponseWriter, r *http.Request) {
 		Lon:            req.Lon,
 		AvailableHours: req.AvailableHours,
 		Preferences:    req.Preferences,
-		UserID:         req.UserID,
 	}
 
 	// Run enrichment pipeline (parallel, resilient)
@@ -83,8 +85,8 @@ func (h *Handler) HandleRecommend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Publish event (async, fire-and-forget)
-	go h.publisher.PublishRecommendation(context.Background(), resp)
+	// Publish event — use request context so it cancels on shutdown
+	go h.publisher.PublishRecommendation(r.Context(), resp)
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -99,8 +101,22 @@ func (h *Handler) HandleListPartners(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, partners)
 }
 
-// GET /health
+// GET /health — actually checks Postgres and Redis connectivity
 func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
+	if err := h.partnerRepo.Ping(r.Context()); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "unhealthy",
+			"reason": "postgres: " + err.Error(),
+		})
+		return
+	}
+	if err := h.cache.Ping(r.Context()); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "unhealthy",
+			"reason": "redis: " + err.Error(),
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "healthy",
 		"service": "context-engine",

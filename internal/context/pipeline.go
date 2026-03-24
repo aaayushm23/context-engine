@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/aaayushm23/context-engine/internal/cache"
 	"github.com/aaayushm23/context-engine/internal/resilience"
@@ -34,7 +35,7 @@ func NewPipeline(
 	breakers := make(map[string]*resilience.CircuitBreaker)
 	for _, e := range enrichers {
 		breakers[e.Name()] = resilience.NewCircuitBreaker(
-			e.Name(), 3, 30*1000*1000*1000, // 30 seconds
+			e.Name(), 3, 30*time.Second,
 		)
 	}
 	return &Pipeline{
@@ -113,6 +114,5 @@ func (p *Pipeline) buildSemanticTags(rc *models.RecommendationContext) {
 	inferred = append(inferred, rc.Preferences...)
 
 	// APPEND to existing semantic tags instead of overriding
-	// This preserves any tags that were set before the pipeline ran
 	rc.SemanticTags = append(rc.SemanticTags, inferred...)
 }

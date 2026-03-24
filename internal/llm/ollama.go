@@ -5,9 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
-	"time"
 
 	"github.com/aaayushm23/context-engine/pkg/models"
 )
@@ -23,7 +21,7 @@ func NewOllamaClient(baseURL, model string) *OllamaClient {
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			// No Timeout here — context cancellation from budget manager controls this
 		},
 	}
 }
@@ -40,7 +38,7 @@ type ollamaResponse struct {
 }
 
 // Candidate is a simplified partner representation passed to the LLM.
-// We decouple from the partner package to avoid circular imports.
+// Decoupled from the partner package to avoid circular imports.
 type Candidate struct {
 	Name       string
 	Category   string
@@ -163,25 +161,4 @@ Respond ONLY with valid JSON:
 		rc.Preferences,
 		candidateList,
 	)
-}
-
-// QuickHaversine for displaying distance in prompts (avoids circular import with partner pkg)
-func QuickHaversine(lat1, lon1, lat2, lon2 float64) float64 {
-	const R = 6371.0
-	dLat := (lat2 - lat1) * math.Pi / 180
-	dLon := (lon2 - lon1) * math.Pi / 180
-	lat1R := lat1 * math.Pi / 180
-	lat2R := lat2 * math.Pi / 180
-	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
-		math.Cos(lat1R)*math.Cos(lat2R)*math.Sin(dLon/2)*math.Sin(dLon/2)
-	return R * 2 * math.Asin(math.Sqrt(a))
-}
-
-// ComposeRecommendation kept for backward compatibility with existing tests.
-func (c *OllamaClient) ComposeRecommendation(
-	ctx context.Context,
-	rc *models.RecommendationContext,
-	candidates []Candidate,
-) (*RerankResult, error) {
-	return c.RerankCandidates(ctx, rc, candidates)
 }

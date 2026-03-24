@@ -10,18 +10,15 @@ const (
 	SignalWeather     ContextSignal = "weather"
 	SignalTime        ContextSignal = "time"
 	SignalPreferences ContextSignal = "preferences"
-	SignalParking     ContextSignal = "parking"
 )
 
 // RecommendationRequest is the input from the API client
 type RecommendationRequest struct {
 	RequestID      string   `json:"request_id,omitempty"`
-	IdempotencyKey string   `json:"idempotency_key,omitempty"`
 	Lat            float64  `json:"lat"`
 	Lon            float64  `json:"lon"`
 	AvailableHours float64  `json:"available_hours"`
 	Preferences    []string `json:"preferences"`
-	UserID         string   `json:"user_id,omitempty"`
 }
 
 // RecommendationContext holds the enriched context as it flows through the pipeline
@@ -46,7 +43,6 @@ type RecommendationContext struct {
 	// User
 	AvailableHours float64
 	Preferences    []string
-	UserID         string
 
 	// Tracking
 	SignalsUsed   []ContextSignal
@@ -84,10 +80,8 @@ type RecommendationResponse struct {
 
 // ResponseMeta holds performance and debugging info
 type ResponseMeta struct {
-	LatencyMs     int64    `json:"latency_ms"`
-	CacheHits     []string `json:"cache_hits"`
-	LLMTokensUsed int      `json:"llm_tokens_used,omitempty"`
-	FromCache     bool     `json:"from_cache"`
+	LatencyMs int64 `json:"latency_ms"`
+	FromCache bool  `json:"from_cache"`
 }
 
 // RecommendationEvent is published to Pub/Sub

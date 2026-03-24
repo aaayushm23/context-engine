@@ -179,7 +179,7 @@ func (l *LocationEnricher) Enrich(ctx context.Context, rc *models.Recommendation
 		// better than no recommendation at all.
 		rc.City = classifyCity(rc.Lat, rc.Lon)
 		rc.Neighborhood = classifyNeighborhood(rc.Lat, rc.Lon)
-		return err
+		return nil // fallback succeeded, context is populated
 	}
 	rc.City = city
 	rc.Neighborhood = neighborhood

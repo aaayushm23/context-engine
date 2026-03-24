@@ -12,18 +12,11 @@ CREATE TABLE IF NOT EXISTS partners (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Recommendations log
-CREATE TABLE IF NOT EXISTS recommendations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    request_id TEXT UNIQUE NOT NULL,
-    context_hash TEXT NOT NULL,
-    result JSONB NOT NULL,
-    source TEXT NOT NULL,
-    latency_ms INTEGER NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Index for semantic tag matching
+-- Index for semantic tag matching (GIN for array overlap operator &&)
 CREATE INDEX IF NOT EXISTS idx_partners_tags ON partners USING GIN(semantic_tags);
+
+-- Index for bounding box queries on lat/lon (used by MatchByTags)
+CREATE INDEX IF NOT EXISTS idx_partners_location ON partners(lat, lon) WHERE active = true;
+
+-- Index for active partner filtering
 CREATE INDEX IF NOT EXISTS idx_partners_active ON partners(active) WHERE active = true;
-CREATE INDEX IF NOT EXISTS idx_recommendations_request_id ON recommendations(request_id);
