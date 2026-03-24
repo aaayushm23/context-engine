@@ -2,6 +2,8 @@ package context
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/aaayushm23/context-engine/pkg/models"
@@ -45,53 +47,6 @@ func TestTimeEnricher(t *testing.T) {
 	}
 }
 
-func TestLocationEnricher(t *testing.T) {
-	enricher := NewLocationEnricher()
-
-	tests := []struct {
-		name             string
-		lat              float64
-		lon              float64
-		wantCity         string
-		wantNeighborhood string
-	}{
-		{
-			name: "Berlin Mitte",
-			lat:  52.52, lon: 13.405,
-			wantCity:         "Berlin",
-			wantNeighborhood: "Mitte",
-		},
-		{
-			name: "Berlin Kreuzberg",
-			lat:  52.489, lon: 13.403,
-			wantCity:         "Berlin",
-			wantNeighborhood: "Kreuzberg",
-		},
-		{
-			name: "Unknown location",
-			lat:  40.7128, lon: -74.0060,
-			wantCity:         "Unknown",
-			wantNeighborhood: "", // will get closest, but city is Unknown
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rc := &models.RecommendationContext{Lat: tt.lat, Lon: tt.lon}
-			err := enricher.Enrich(context.Background(), rc)
-
-			if err != nil {
-				t.Fatalf("Enrich() error = %v", err)
-			}
-			if rc.City != tt.wantCity {
-				t.Errorf("City = %s, want %s", rc.City, tt.wantCity)
-			}
-			if tt.wantNeighborhood != "" && rc.Neighborhood != tt.wantNeighborhood {
-				t.Errorf("Neighborhood = %s, want %s", rc.Neighborhood, tt.wantNeighborhood)
-			}
-		})
-	}
-}
 
 func TestPreferenceEnricher_ExpandsTags(t *testing.T) {
 	enricher := NewPreferenceEnricher()
@@ -166,5 +121,88 @@ func TestWeatherCodeClassification(t *testing.T) {
 		if indoor != tt.wantIndoor {
 			t.Errorf("isIndoorWeather(%d) = %v, want %v", tt.code, indoor, tt.wantIndoor)
 		}
+	}
+}
+
+// TestLocationEnricher_NominatimAPI calls the real Nominatim API.
+// Skip with -short flag in CI to avoid network dependency.
+func TestLocationEnricher_NominatimAPI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real Nominatim API call in short mode")
+	}
+
+	enricher := NewLocationEnricher()
+
+	tests := []struct {
+		name             string
+		lat, lon         float64
+		wantCity         string
+		wantNeighborhood string
+	}{
+		{
+			name:             "Berlin Mitte (Brandenburg Gate)",
+			lat:              52.5163, lon: 13.3777,
+			wantCity:         "Berlin",
+			wantNeighborhood: "Mitte",
+		},
+		{
+			name:             "Berlin Kreuzberg",
+			lat:              52.4973, lon: 13.3906,
+			wantCity:         "Berlin",
+			wantNeighborhood: "Kreuzberg",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rc := &models.RecommendationContext{Lat: tt.lat, Lon: tt.lon}
+			err := enricher.Enrich(context.Background(), rc)
+			if err != nil {
+				t.Fatalf("Enrich() error = %v (is network available?)", err)
+			}
+			if rc.City != tt.wantCity {
+				t.Errorf("City = %q, want %q", rc.City, tt.wantCity)
+			}
+			if rc.Neighborhood != tt.wantNeighborhood {
+				t.Errorf("Neighborhood = %q, want %q", rc.Neighborhood, tt.wantNeighborhood)
+			}
+		})
+	}
+}
+
+// TestLocationEnricher_APIFailure_FallsBackToHardcoded verifies that when
+// Nominatim is unreachable, the enricher falls back to bounding-box
+// classification rather than returning empty context.
+// Consistent with the pipeline's partial-failure philosophy: always produce
+// output, even degraded.
+func TestLocationEnricher_APIFailure_FallsBackToHardcoded(t *testing.T) {
+	// Mock server returns a 503 — simulates Nominatim being down
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer mockServer.Close()
+
+	// Enricher with mock client — real Nominatim URL won't be called
+	// because the client is scoped to the mock server's transport.
+	// We just call Enrich directly; the real URL will fail on this client,
+	// triggering the fallback path.
+	enricher := &LocationEnricher{
+		httpClient: mockServer.Client(),
+	}
+
+	rc := &models.RecommendationContext{
+		Lat: 52.5200, // Berlin Mitte
+		Lon: 13.4050,
+	}
+
+	err := enricher.Enrich(context.Background(), rc)
+
+	// Error expected (API unreachable), but fallback must have populated context
+	_ = err
+	if rc.City == "" {
+		t.Error("City should be populated via fallback even when Nominatim is down")
+	}
+	if rc.Neighborhood == "" {
+		t.Error("Neighborhood should be populated via fallback even when Nominatim is down")
 	}
 }

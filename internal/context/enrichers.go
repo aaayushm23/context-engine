@@ -140,23 +140,105 @@ func (t *TimeEnricher) Enrich(ctx context.Context, rc *models.RecommendationCont
 }
 
 // --- Location Enricher ---
+//
+// Uses the Nominatim reverse geocoding API (OpenStreetMap).
+// Free, no API key required. Nominatim usage policy: max 1 req/sec,
+// must include a descriptive User-Agent.
+//
+// Falls back to bounding-box classification if the API call fails —
+// consistent with the rest of the pipeline: always return something.
 
-type LocationEnricher struct{}
+type nominatimResponse struct {
+	Address struct {
+		Suburb      string `json:"suburb"`
+		CityDistrict string `json:"city_district"`
+		City        string `json:"city"`
+		Town        string `json:"town"`
+		Village     string `json:"village"`
+		Country     string `json:"country"`
+	} `json:"address"`
+}
 
-func NewLocationEnricher() *LocationEnricher { return &LocationEnricher{} }
+type LocationEnricher struct {
+	httpClient *http.Client
+}
+
+func NewLocationEnricher() *LocationEnricher {
+	return &LocationEnricher{
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+	}
+}
 
 func (l *LocationEnricher) Name() string { return "location" }
 
 func (l *LocationEnricher) Enrich(ctx context.Context, rc *models.RecommendationContext) error {
-	// Simple reverse geocoding based on known Berlin neighborhoods
-	// In production, this would call a geocoding API
-	rc.City = classifyCity(rc.Lat, rc.Lon)
-	rc.Neighborhood = classifyNeighborhood(rc.Lat, rc.Lon)
+	city, neighborhood, err := l.reverseGeocode(ctx, rc.Lat, rc.Lon)
+	if err != nil {
+		// Graceful degradation: fall back to bounding-box classification.
+		// This mirrors the circuit breaker philosophy — partial context is
+		// better than no recommendation at all.
+		rc.City = classifyCity(rc.Lat, rc.Lon)
+		rc.Neighborhood = classifyNeighborhood(rc.Lat, rc.Lon)
+		return err
+	}
+	rc.City = city
+	rc.Neighborhood = neighborhood
 	return nil
 }
 
+// reverseGeocode calls the Nominatim OpenStreetMap API to resolve
+// real city and neighborhood names from GPS coordinates.
+func (l *LocationEnricher) reverseGeocode(ctx context.Context, lat, lon float64) (city, neighborhood string, err error) {
+	url := fmt.Sprintf(
+		"https://nominatim.openstreetmap.org/reverse?format=json&lat=%.6f&lon=%.6f",
+		lat, lon,
+	)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", "", err
+	}
+	// Nominatim requires a meaningful User-Agent identifying your app
+	req.Header.Set("User-Agent", "context-engine/1.0 (github.com/aaayushm23/context-engine)")
+
+	resp, err := l.httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("nominatim request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result nominatimResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", "", fmt.Errorf("nominatim decode failed: %w", err)
+	}
+
+	// Resolve city: prefer city, fall back to town or village
+	city = result.Address.City
+	if city == "" {
+		city = result.Address.Town
+	}
+	if city == "" {
+		city = result.Address.Village
+	}
+	if city == "" {
+		city = "Unknown"
+	}
+
+	// Resolve neighborhood: prefer suburb, fall back to city_district
+	neighborhood = result.Address.Suburb
+	if neighborhood == "" {
+		neighborhood = result.Address.CityDistrict
+	}
+	if neighborhood == "" {
+		neighborhood = city // last resort
+	}
+
+	return city, neighborhood, nil
+}
+
+// classifyCity and classifyNeighborhood are kept as fallback logic
+// when the Nominatim API is unavailable.
 func classifyCity(lat, lon float64) string {
-	// Berlin bounding box (rough)
 	if lat >= 52.3 && lat <= 52.7 && lon >= 13.1 && lon <= 13.8 {
 		return "Berlin"
 	}
@@ -167,7 +249,6 @@ func classifyCity(lat, lon float64) string {
 }
 
 func classifyNeighborhood(lat, lon float64) string {
-	// Known Berlin neighborhoods with rough center coordinates
 	neighborhoods := map[string][2]float64{
 		"Mitte":           {52.5200, 13.4050},
 		"Kreuzberg":       {52.4894, 13.4028},
@@ -176,7 +257,6 @@ func classifyNeighborhood(lat, lon float64) string {
 		"Charlottenburg":  {52.5167, 13.3000},
 		"Neukölln":        {52.4812, 13.4348},
 	}
-
 	closest := "Unknown"
 	minDist := math.MaxFloat64
 	for name, coords := range neighborhoods {
