@@ -50,7 +50,7 @@ func TestHaversineDistance(t *testing.T) {
 					got, tt.wantMin, tt.wantMax)
 			}
 
-			// Verify symmetry: distance(A,B) == distance(B,A)
+			// A mathematically sound great-circle distance algorithm must be commutative.
 			reverse := HaversineDistance(tt.lat2, tt.lon2, tt.lat1, tt.lon1)
 			if math.Abs(got-reverse) > 0.001 {
 				t.Errorf("distance is not symmetric: %.4f vs %.4f", got, reverse)

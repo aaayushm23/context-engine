@@ -31,17 +31,17 @@ func TestRuleBasedFallback_ReturnsRecommendation(t *testing.T) {
 
 	rec := RuleBasedFallback(rc, partners)
 
-	// Must always return something
+	// The fallback boundary must guarantee a result to preserve the user experience, even if suboptimal.
 	if len(rec.Experiences) == 0 {
 		t.Fatal("expected at least one experience")
 	}
 
-	// Source must be "rules"
+	// We enforce telemetry correctness here so alerting dashboards can trust the degradation counts.
 	if rec.Source != "rules" {
 		t.Errorf("source = %s, want rules", rec.Source)
 	}
 
-	// Should prefer indoor partners when weather is rainy
+	// Ensures the deterministic heuristic correctly interprets environmental risk signals.
 	firstExp := rec.Experiences[0]
 	if firstExp.Category == "outdoor_activity" {
 		t.Error("outdoor activity should NOT be top pick in rainy weather")
@@ -57,7 +57,7 @@ func TestRuleBasedFallback_CategoryDiversity(t *testing.T) {
 		SignalsUsed:    []models.ContextSignal{"weather"},
 	}
 
-	// All same category
+	// Supply degenerate inventory (identical categories) to prove diversity constraints.
 	partners := []partner.Partner{
 		{ID: "1", Name: "Gym A", Category: "indoor_activity", SemanticTags: []string{"indoor", "fitness"}, Lat: 52.52, Lon: 13.40},
 		{ID: "2", Name: "Gym B", Category: "indoor_activity", SemanticTags: []string{"indoor", "fitness"}, Lat: 52.52, Lon: 13.41},
@@ -67,7 +67,7 @@ func TestRuleBasedFallback_CategoryDiversity(t *testing.T) {
 
 	rec := RuleBasedFallback(rc, partners)
 
-	// Should have diverse categories, not all indoor_activity
+	// The fallback engine must defensively spread choices instead of clumping identical offerings.
 	categories := map[string]bool{}
 	for _, exp := range rec.Experiences {
 		categories[exp.Category] = true
@@ -87,7 +87,7 @@ func TestRuleBasedFallback_EmptyPartners(t *testing.T) {
 
 	rec := RuleBasedFallback(rc, []partner.Partner{})
 
-	// Should not panic, should return empty but valid recommendation
+	// Complete inventory exhaustion must resolve into an empty shell rather than triggering a nil panic.
 	if rec.Source != "rules" {
 		t.Errorf("source = %s, want rules", rec.Source)
 	}

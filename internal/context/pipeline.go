@@ -11,13 +11,16 @@ import (
 	"github.com/aaayushm23/context-engine/pkg/models"
 )
 
-// Enricher adds context signals to the recommendation context
+// Enricher defines a uniform boundary for all external data integrations.
+// This interface allows the pipeline to dynamically scale or swap signals without refactoring.
 type Enricher interface {
 	Enrich(ctx context.Context, rc *models.RecommendationContext) error
 	Name() string
 }
 
-// Pipeline runs all enrichers in parallel with resilience
+// Pipeline serves as the orchestration layer for context assimilation.
+// By centralizing timeout budgets and circuit breakers here, we isolate the HTTP layer
+// from the complexities of partial graph resolution and concurrent remote calls.
 type Pipeline struct {
 	enrichers []Enricher
 	breakers  map[string]*resilience.CircuitBreaker
@@ -47,8 +50,9 @@ func NewPipeline(
 	}
 }
 
-// Run executes all enrichers in parallel, collecting results.
-// Failed enrichers are recorded but don't stop the pipeline.
+// Run coordinates concurrent execution across all registered enrichers.
+// It enforces scatter-gather semantics where stragglers are ignored once the
+// parent context timeout expires, prioritizing consistent latency over data completeness.
 func (p *Pipeline) Run(ctx context.Context, rc *models.RecommendationContext) {
 	stageCtx, cancel := p.budget.StageContext(ctx, "context_fetch")
 	defer cancel()
@@ -89,8 +93,8 @@ func (p *Pipeline) Run(ctx context.Context, rc *models.RecommendationContext) {
 	p.buildSemanticTags(rc)
 }
 
-// buildSemanticTags derives matching tags from enriched context
-// and appends them to any existing tags (e.g., from user preferences)
+// buildSemanticTags bridges the gap between disparate contextual signals and the unified
+// prompt ontology required by the LLM by synthesizing high-level behavioral tags.
 func (p *Pipeline) buildSemanticTags(rc *models.RecommendationContext) {
 	var inferred []string
 
@@ -113,6 +117,7 @@ func (p *Pipeline) buildSemanticTags(rc *models.RecommendationContext) {
 	// Append user preferences (already expanded by PreferenceEnricher)
 	inferred = append(inferred, rc.Preferences...)
 
-	// APPEND to existing semantic tags instead of overriding
+	// We explicitly append rather than overwrite to preserve signals
+	// that were explicitly injected by the client request or upstream processes.
 	rc.SemanticTags = append(rc.SemanticTags, inferred...)
 }

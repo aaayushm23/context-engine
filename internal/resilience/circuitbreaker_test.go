@@ -52,7 +52,7 @@ func TestCircuitBreaker_ClosedState(t *testing.T) {
 	}
 }
 
-// --- Failure tests (MOST IMPORTANT) ---
+// --- State Transition Validation ---
 
 func TestCircuitBreaker_OpensAfterThreshold(t *testing.T) {
 	cb := NewCircuitBreaker("test", 3, 1*time.Second)
@@ -67,7 +67,7 @@ func TestCircuitBreaker_OpensAfterThreshold(t *testing.T) {
 		t.Fatalf("expected StateOpen after %d failures, got %v", 3, cb.State())
 	}
 
-	// Next call should be rejected immediately without executing fn
+	// The circuit must instantly shed load once open to protect the failing downstream component.
 	called := false
 	err := cb.Execute(func() error {
 		called = true
@@ -97,7 +97,8 @@ func TestCircuitBreaker_RecoveryAfterTimeout(t *testing.T) {
 	// Wait for recovery timeout
 	time.Sleep(150 * time.Millisecond)
 
-	// Next call should go through (half-open probe) and succeed
+	// We must prove that exactly one "probe" is allowed to cross the boundary after recovery,
+	// safeguarding the fragile downstream from a sudden burst of queued requests.
 	err := cb.Execute(func() error { return nil })
 	if err != nil {
 		t.Errorf("expected success in half-open, got %v", err)
@@ -128,7 +129,7 @@ func TestCircuitBreaker_SuccessResetsFailureCount(t *testing.T) {
 	}
 }
 
-// --- Thundering herd prevention test ---
+// --- Concurrency Safety and Thundering Herd Defense ---
 
 func TestCircuitBreaker_HalfOpenSingleProbe(t *testing.T) {
 	cb := NewCircuitBreaker("test", 2, 100*time.Millisecond)

@@ -19,7 +19,7 @@ func TestTimeEnricher(t *testing.T) {
 		t.Fatalf("TimeEnricher.Enrich() error = %v", err)
 	}
 
-	// Should always populate these fields
+	// Core scheduling fields must be universally populated as they anchor the LLM prompt.
 	if rc.DayOfWeek == "" {
 		t.Error("DayOfWeek should not be empty")
 	}
@@ -33,7 +33,7 @@ func TestTimeEnricher(t *testing.T) {
 		t.Errorf("Hour should be 0-23, got %d", rc.Hour)
 	}
 
-	// Verify TimeSlot is one of the expected values
+	// Rigid ontology enforcement blocks arbitrary string passing to the LLM.
 	validSlots := map[string]bool{
 		"weekend_morning":   true,
 		"weekend_afternoon": true,
@@ -124,8 +124,8 @@ func TestWeatherCodeClassification(t *testing.T) {
 	}
 }
 
-// TestLocationEnricher_NominatimAPI calls the real Nominatim API.
-// Skip with -short flag in CI to avoid network dependency.
+// TestLocationEnricher_NominatimAPI validates the brittle integration boundary with OSM.
+// We gate this behind -short to prevent flaky CI builds caused by upstream rate limits.
 func TestLocationEnricher_NominatimAPI(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real Nominatim API call in short mode")
@@ -170,11 +170,9 @@ func TestLocationEnricher_NominatimAPI(t *testing.T) {
 	}
 }
 
-// TestLocationEnricher_APIFailure_FallsBackToHardcoded verifies that when
-// Nominatim is unreachable, the enricher falls back to bounding-box
-// classification rather than returning empty context.
-// Consistent with the pipeline's partial-failure philosophy: always produce
-// output, even degraded.
+// TestLocationEnricher_APIFailure_FallsBackToHardcoded asserts our core resilience mandate:
+// a localized failure in an external dependency must trigger graceful degradation,
+// never a hard fault that cascades up to the user request.
 func TestLocationEnricher_APIFailure_FallsBackToHardcoded(t *testing.T) {
 	// Mock server returns a 503 — simulates Nominatim being down
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +195,7 @@ func TestLocationEnricher_APIFailure_FallsBackToHardcoded(t *testing.T) {
 
 	err := enricher.Enrich(context.Background(), rc)
 
-	// Error expected (API unreachable), but fallback must have populated context
+	// The structural output must persist via hardcoded degradation despite network failure.
 	_ = err
 	if rc.City == "" {
 		t.Error("City should be populated via fallback even when Nominatim is down")

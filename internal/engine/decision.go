@@ -46,7 +46,9 @@ func (de *DecisionEngine) GenerateRecommendation(
 	start := time.Now()
 	idemKey := "idem:" + rc.RequestID
 
-	// ── Step 1: Idempotency check ──
+	// ── Phase 1: Edge Idempotency ──
+	// Intercepting at the very beginning of the pipeline prevents expensive graph resolution
+	// and LLM invocations for client-side retries caused by network drops.
 	var cachedResp models.RecommendationResponse
 	exists, err := de.cache.CheckIdempotency(ctx, idemKey)
 	if err == nil && exists {
@@ -56,7 +58,9 @@ func (de *DecisionEngine) GenerateRecommendation(
 		return &cachedResp, nil
 	}
 
-	// ── Step 2: SETNX lock — prevent duplicate concurrent processing ──
+	// ── Phase 2: Distributed Concurrency Control ──
+	// Thundering herds are mitigated here. If a client sends three identical requests instantly,
+	// only one worker is allowed to proceed; the others sleep and wait for the cache to populate.
 	acquired, lockErr := de.cache.AcquireIdempotencyLock(ctx, rc.RequestID, 30*time.Second)
 	if lockErr != nil {
 		de.logger.Warn("failed to acquire idempotency lock", "error", lockErr, "request_id", rc.RequestID)
@@ -72,17 +76,21 @@ func (de *DecisionEngine) GenerateRecommendation(
 		defer de.cache.ReleaseIdempotencyLock(ctx, rc.RequestID)
 	}
 
-	// ── Step 3: CANDIDATE GENERATION (rules engine — fast, deterministic) ──
+	// ── Phase 3: Deterministic Candidate Generation ──
+	// We mandate that all partner matching uses the fast, rule-based engine. This guarantees
+	// spatial and semantic constraints are respected before handing data to the non-deterministic LLM.
 	matchCtx, matchCancel := de.budget.StageContext(ctx, "partner_match")
 	candidates, err := de.partnerRepo.MatchByTags(matchCtx, rc.SemanticTags, rc.Lat, rc.Lon, 10)
-	matchCancel() // release immediately — don't hold until function return
+	matchCancel() // Canceling the scoped context immediately frees up timing budget for downstream phases.
 
 	if err != nil {
 		de.logger.Error("partner match failed", "error", err, "request_id", rc.RequestID)
 		candidates = []partner.Partner{}
 	}
 
-	// ── Step 4: INTELLIGENT RERANKING (LLM — picks best bundle from candidates) ──
+	// ── Phase 4: Probabilistic Reranking (LLM) ──
+	// The LLM acts purely as a presentation and selection layer over the pre-filtered candidates.
+	// This separation of concerns prevents the LLM from hallucinating non-existent inventory.
 	var recommendation models.Recommendation
 
 	if !forceRules && len(candidates) > 0 {
@@ -110,7 +118,7 @@ func (de *DecisionEngine) GenerateRecommendation(
 				rerankResult, innerErr = de.llmClient.RerankCandidates(llmCtx, rc, llmCandidates)
 				return innerErr
 			})
-			llmCancel() // release immediately after LLM call completes
+			llmCancel() // Strict resource management: release the context the millisecond the LLM IO completes.
 
 			if llmErr != nil {
 				de.logger.Warn("LLM reranking failed, using rule-based selection",
@@ -130,7 +138,9 @@ func (de *DecisionEngine) GenerateRecommendation(
 		recommendation = RuleBasedFallback(rc, candidates)
 	}
 
-	// ── Step 5: Build response + store for idempotency ──
+	// ── Phase 5: Result Commit ──
+	// Committing the final response guarantees subsequent requests within the TTL retrieve
+	// this exact payload from Phase 1 without executing the pipeline.
 	resp := &models.RecommendationResponse{
 		RequestID:      rc.RequestID,
 		Recommendation: recommendation,

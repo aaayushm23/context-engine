@@ -22,7 +22,8 @@ func TestRequestIDMiddleware_GeneratesID(t *testing.T) {
 
 	handler.ServeHTTP(rec, req)
 
-	// Should be in response header too
+	// Validating header propagation ensures that upstream load balancers
+// or downstream observability tools can capture the ID.
 	if rec.Header().Get("X-Request-ID") == "" {
 		t.Error("X-Request-ID should be in response header")
 	}
@@ -58,7 +59,8 @@ func TestRecoveryMiddleware_CatchesPanic(t *testing.T) {
 	req := httptest.NewRequest("GET", "/test", nil)
 	rec := httptest.NewRecorder()
 
-	// Should NOT panic — recovery middleware catches it
+	// We explicitly test panic recovery here to guarantee that a rogue handler
+// will not crash the host process during runtime.
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != 500 {

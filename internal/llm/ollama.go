@@ -21,7 +21,8 @@ func NewOllamaClient(baseURL, model string) *OllamaClient {
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			// No Timeout here — context cancellation from budget manager controls this
+			// We omit the internal HTTP client timeout to prevent disjointed cancellation logic.
+			// The global BudgetManager enforces strict latency ceilings via Context across all IO bounds.
 		},
 	}
 }
@@ -37,8 +38,9 @@ type ollamaResponse struct {
 	Response string `json:"response"`
 }
 
-// Candidate is a simplified partner representation passed to the LLM.
-// Decoupled from the partner package to avoid circular imports.
+// Candidate breaks the dependency graph between the LLM and the partner repositories.
+// By projecting only essential spatial and semantic fields, we insulate the LLM package
+// from database-schema changes or full domain logic leaks.
 type Candidate struct {
 	Name       string
 	Category   string
@@ -46,7 +48,8 @@ type Candidate struct {
 	DistanceKm float64
 }
 
-// RerankResult is the LLM's intelligent selection from candidates.
+// RerankResult enforces a rigid JSON schema contract to constrain
+// the non-deterministic text generation of the underlying LLM via strict unmarshaling.
 type RerankResult struct {
 	Title      string      `json:"title"`
 	Selections []Selection `json:"selections"`
@@ -59,19 +62,12 @@ type Selection struct {
 	Reason      string `json:"reason"`
 }
 
-// RerankCandidates is the core LLM function.
+// RerankCandidates sits at the crux of the Recommendation Pipeline.
 //
-// Architecture: Candidate Generation → Intelligent Reranking
-// (Same pattern as Spotify/Netflix/Uber recommendation systems)
-//
-// The rules engine generates 8-10 candidates (fast, deterministic).
-// The LLM picks the 3-4 that form the BEST coherent experience bundle.
-//
-// What the LLM does that code CANNOT:
-//   - Vibe matching: casual activities pair with casual food, not fine dining
-//   - Flow reasoning: active first → food after makes sense; reverse doesn't
-//   - Combination intelligence: bouldering + craft beer + street food > bouldering + spa + museum
-//   - Contextual nuance: "fitness + food on a rainy evening" → cozy indoor gym + comfort food
+// By applying generative AI ONLY as a late-stage reranking and narrative layer over
+// a deterministically filtered graph (the 'Candidates'), we constrain the model's
+// hallucination vector while leveraging its semantic "vibe matching" capabilities
+// (e.g. recognizing that fine dining does not follow a sweaty bouldering session).
 func (c *OllamaClient) RerankCandidates(
 	ctx context.Context,
 	rc *models.RecommendationContext,

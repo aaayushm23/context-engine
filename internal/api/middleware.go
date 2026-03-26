@@ -13,7 +13,9 @@ type contextKey string
 
 const RequestIDKey contextKey = "request_id"
 
-// RequestIDMiddleware injects or extracts request ID
+// RequestIDMiddleware ensures traceability across distributed components by injecting a unique ID.
+// This is critical for correlating logs and events in out-of-process boundaries (like Redis PubSub)
+// and debugging production issues without relying on individual service logs.
 func RequestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := r.Header.Get("X-Request-ID")
@@ -26,14 +28,17 @@ func RequestIDMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// LoggingMiddleware logs every request with structured fields
+// LoggingMiddleware provides a uniform instrumentation point for incoming edge requests.
+// By capturing status and duration here, we eliminate the need for handlers to log themselves,
+// enforcing a single source of truth for edge monitoring and SLO tracking.
 func LoggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			reqID, _ := r.Context().Value(RequestIDKey).(string)
 
-			// Wrap response writer to capture status code
+			// We wrap the ResponseWriter to intercept the written status code,
+// allowing the middleware to log the true outcome of a request after the handler completes.
 			wrapped := &statusWriter{ResponseWriter: w, status: 200}
 			next.ServeHTTP(wrapped, r)
 
@@ -58,7 +63,9 @@ func (sw *statusWriter) WriteHeader(code int) {
 	sw.ResponseWriter.WriteHeader(code)
 }
 
-// TimeoutMiddleware wraps handler with total request timeout
+// TimeoutMiddleware enforces a strict system-wide SLA to avoid resource exhaustion.
+// In high-concurrency systems, unbounded requests tie up goroutines and database connections;
+// this context cancellation proactively limits blast radius under severe load or downstream stalls.
 func TimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +76,9 @@ func TimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
 	}
 }
 
-// RecoveryMiddleware catches panics and returns 500
+// RecoveryMiddleware acts as the last line of defense against nil pointer dereferences
+// and other panics that typically crash the entire process. By recovering here,
+// we isolate failures to the individual request thread, maintaining overall system availability.
 func RecoveryMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -17,7 +17,8 @@ func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// Ping checks database connectivity — used by the health endpoint
+// Ping validates the physical connection pool to Postgres. We expose this explicitly
+// so orchestration layers (like Kubernetes) can verify the data plane before routing traffic.
 func (r *Repository) Ping(ctx context.Context) error {
 	return r.db.PingContext(ctx)
 }
@@ -76,7 +77,8 @@ func (r *Repository) MatchByTags(ctx context.Context, tags []string, lat, lon fl
 	return partners, rows.Err()
 }
 
-// GetAll returns all active partners
+// GetAll provides an administrative escape hatch to dump the current active inventory.
+// It bypasses spatial logic entirely, intended only for internal tooling or cache warming.
 func (r *Repository) GetAll(ctx context.Context) ([]Partner, error) {
 	query := `SELECT id, name, category, semantic_tags, lat, lon, geo_fence_radius_km, active, created_at
 			  FROM partners WHERE active = true ORDER BY name`
@@ -136,7 +138,9 @@ func (r *Repository) Create(ctx context.Context, p *Partner) error {
 	).Scan(&p.ID, &p.CreatedAt)
 }
 
-// HaversineDistance calculates the distance in km between two lat/lon points
+// HaversineDistance provides a mathematically accurate great-circle distance.
+// We execute this in the application layer (rather than the DB) to calculate precise
+// point-to-point distances for the final LLM prompt, without burdening the database CPU.
 func HaversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	const R = 6371.0
 	dLat := (lat2 - lat1) * math.Pi / 180

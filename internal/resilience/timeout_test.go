@@ -16,21 +16,21 @@ func TestBudgetManager_StageContext(t *testing.T) {
 		wantMaxTimeout time.Duration
 	}{
 		{
-			name:           "llm_call gets its allocated budget",
+			name:           "Core stages receive explicitly provisioned boundaries",
 			stage:          "llm_call",
 			parentTimeout:  60 * time.Second,
 			wantMaxTimeout: 31 * time.Second,
 		},
 		{
-			name:           "unknown stage gets default 50ms",
+			name:           "Missing stages gracefully default to minimal safe budget",
 			stage:          "unknown_stage",
 			parentTimeout:  15 * time.Second,
 			wantMaxTimeout: 60 * time.Millisecond,
 		},
 		{
-			name:           "stage budget capped by parent remaining time",
+			name:           "Mathematical clipping prevents sub-stage budgets from violating absolute SLAs",
 			stage:          "llm_call",
-			parentTimeout:  50 * time.Millisecond, // parent has less than stage budget
+			parentTimeout:  50 * time.Millisecond, // Absolute deadline is less than requested allocation
 			wantMaxTimeout: 55 * time.Millisecond,
 		},
 	}
@@ -65,7 +65,7 @@ func TestBudgetManager_StageContextCancellation(t *testing.T) {
 	stageCtx, stageCancel := bm.StageContext(parent, "llm_call")
 	defer stageCancel()
 
-	// Wait for context to expire
+	// Suspend execution to definitively prove the BudgetManager enforces the hard deadline.
 	<-stageCtx.Done()
 
 	if stageCtx.Err() != context.DeadlineExceeded {

@@ -22,7 +22,8 @@ func NewRedisCache(addr string) *RedisCache {
 	}
 }
 
-// Get retrieves a cached value and unmarshals it into dest
+// Get encapsulates the underlying Redis protocol, insulating domain logic from byte-level
+// unmarshaling and standardizing the handling of expected misses versus actual connection errors.
 func (c *RedisCache) Get(ctx context.Context, key string, dest interface{}) (bool, error) {
 	val, err := c.client.Get(ctx, key).Result()
 	if err == redis.Nil {
@@ -38,7 +39,8 @@ func (c *RedisCache) Get(ctx context.Context, key string, dest interface{}) (boo
 	return true, nil
 }
 
-// Set stores a value with TTL
+// Set enforces a mandatory TTL argument. This prevents unbounded memory growth
+// and aligns with our design philosophy that cache data is inherently ephemeral.
 func (c *RedisCache) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -47,7 +49,8 @@ func (c *RedisCache) Set(ctx context.Context, key string, value interface{}, ttl
 	return c.client.Set(ctx, key, data, ttl).Err()
 }
 
-// CheckIdempotency returns true if this request was already processed
+// CheckIdempotency guards against duplicate processing (e.g., from client retries).
+// By verifying history at the edge, we protect expensive downstream ML inference endpoints.
 func (c *RedisCache) CheckIdempotency(ctx context.Context, key string) (bool, error) {
 	val, err := c.client.Get(ctx, key).Result()
 	if err == redis.Nil {
@@ -59,13 +62,15 @@ func (c *RedisCache) CheckIdempotency(ctx context.Context, key string) (bool, er
 	return val != "", nil
 }
 
-// SetIdempotency marks a request as processed
+// SetIdempotency commits the processed outcome, ensuring future identical requests
+// bypass the engine and serve the cached result immediately.
 func (c *RedisCache) SetIdempotency(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
 	return c.Set(ctx, key, value, ttl)
 }
 
-// AcquireIdempotencyLock attempts to acquire a processing lock for a request_id.
-// Uses SETNX (SetNX) — only succeeds if the key doesn't exist.
+// AcquireIdempotencyLock provides distributed concurrency control. If two identical requests
+// hit different pods at the exact same moment, SETNX ensures only one initiates the heavy
+// context enrichment and LLM generation loop.
 // Returns true if lock was acquired (this request should proceed).
 // Returns false if another request is already processing this ID.
 func (c *RedisCache) AcquireIdempotencyLock(ctx context.Context, requestID string, ttl time.Duration) (bool, error) {
@@ -77,13 +82,15 @@ func (c *RedisCache) AcquireIdempotencyLock(ctx context.Context, requestID strin
 	return ok, nil
 }
 
-// ReleaseIdempotencyLock releases the processing lock
+// ReleaseIdempotencyLock allows subsequent retries to proceed if the initial worker
+// crashed or failed before setting the final idempotency record.
 func (c *RedisCache) ReleaseIdempotencyLock(ctx context.Context, requestID string) {
 	lockKey := "lock:" + requestID
 	c.client.Del(ctx, lockKey)
 }
 
-// ContentHash generates a cache key from context data
+// ContentHash provides a deterministic cache key derived purely from payload semantics,
+// allowing cache hits even when the HTTP-level request IDs differ but the query is identical.
 func ContentHash(data interface{}) string {
 	bytes, _ := json.Marshal(data)
 	hash := sha256.Sum256(bytes)

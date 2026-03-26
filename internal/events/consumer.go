@@ -15,7 +15,8 @@ type AnalyticsConsumer struct {
 	client *redis.Client
 	logger *slog.Logger
 
-	// Unexported — only accessible via Stats() method
+	// Thread-safe accumulators prevent read/write races during concurrent event ingestion.
+	// Keeping them unexported forces structural encapsulation via the Stats() accessor.
 	totalRecommendations atomic.Int64
 	llmCount             atomic.Int64
 	rulesCount           atomic.Int64
@@ -69,7 +70,8 @@ func (ac *AnalyticsConsumer) processEvent(event models.RecommendationEvent) {
 	)
 }
 
-// Stats returns current analytics for the /metrics endpoint
+// Stats surfaces atomic point-in-time metrics without halting the event loop,
+// enabling zero-latency health and throughput monitoring.
 func (ac *AnalyticsConsumer) Stats() map[string]interface{} {
 	total := ac.totalRecommendations.Load()
 	avgLatency := int64(0)

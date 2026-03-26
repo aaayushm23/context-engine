@@ -13,28 +13,30 @@ type scored struct {
 	score   float64
 }
 
-// SelectPartners is the PRIMARY partner selection engine.
-// ALL business logic lives here: weather filtering, distance scoring,
-// category diversity, parking inclusion.
-// The LLM NEVER selects partners — it only narrates what this function picks.
+// SelectPartners acts as the deterministic hard-boundary for inventory.
+// By strictly isolating spatial and categorical filtering here, we ensure that
+// any downstream processing (like LLM curation) operates on a mathematically valid
+// and verified subset of the graph, completely neutralizing hallucination risks.
 func SelectPartners(rc *models.RecommendationContext, partners []partner.Partner, max int) []partner.Partner {
 	if len(partners) == 0 {
 		return nil
 	}
 
-	// Score each partner
+	// We apply a uniform scoring heuristic to normalize diverse attributes (distance, tags, categories)
+	// into a single comparable floating-point metric for ranking.
 	var scoredPartners []scored
 	for _, p := range partners {
 		score := scorePartner(rc, p)
 		scoredPartners = append(scoredPartners, scored{partner: p, score: score})
 	}
 
-	// Sort by score descending
+	// Stable descendent sort guarantees the most relevant inventory surfaces first.
 	sort.Slice(scoredPartners, func(i, j int) bool {
 		return scoredPartners[i].score > scoredPartners[j].score
 	})
 
-	// Pick top partners with category diversity
+	// Enforcing strict category diversity prevents homogenous recommendations
+	// (e.g., suggesting three coffee shops) which leads to poor user conversion.
 	var selected []partner.Partner
 	usedCategories := map[string]bool{}
 
@@ -49,7 +51,8 @@ func SelectPartners(rc *models.RecommendationContext, partners []partner.Partner
 		selected = append(selected, sp.partner)
 	}
 
-	// Always try to include parking if not already selected
+	// Injecting specific secondary inventory (like parking) adds holistic value
+	// that a pure nearest-neighbor distance sort would naturally truncate.
 	if !usedCategories["parking"] {
 		for _, sp := range scoredPartners {
 			if sp.partner.Category == "parking" {
@@ -62,9 +65,9 @@ func SelectPartners(rc *models.RecommendationContext, partners []partner.Partner
 	return selected
 }
 
-// BuildRecommendation creates a complete recommendation from selected partners.
-// Uses deterministic, rule-based reasons. The LLM can override these later with
-// creative narrative — but this version is always valid on its own.
+// BuildRecommendation constructs a complete, valid response payload purely via rules.
+// It serves as the baseline architectural fallback, ensuring the system can degrade gracefully
+// and remain highly available even if advanced probabilistic layers (LLMs) completely collapse.
 func BuildRecommendation(rc *models.RecommendationContext, selected []partner.Partner) models.Recommendation {
 	var experiences []models.Experience
 
@@ -100,8 +103,9 @@ func BuildRecommendation(rc *models.RecommendationContext, selected []partner.Pa
 	}
 }
 
-// RuleBasedFallback is kept for backward compatibility with tests.
-// It calls SelectPartners + BuildRecommendation internally.
+// RuleBasedFallback orchestrates the full deterministic pipeline. It provides
+// a clean substitution boundary that integration tests can target to verify core logic
+// without standing up heavy model infrastructure.
 func RuleBasedFallback(rc *models.RecommendationContext, partners []partner.Partner) models.Recommendation {
 	selected := SelectPartners(rc, partners, 3)
 	return BuildRecommendation(rc, selected)

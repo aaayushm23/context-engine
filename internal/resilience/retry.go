@@ -6,7 +6,9 @@ import (
 	"time"
 )
 
-// Retry executes fn with exponential backoff
+// Retry encapsulates cross-cutting exponential backoff logic.
+// By centralizing this, we ensure transient network blips don't immediately cascade
+// into hard 500 errors for the end user while respecting downstream rate limits.
 func Retry(ctx context.Context, maxAttempts int, baseSleep time.Duration, fn func() error) error {
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {

@@ -64,7 +64,7 @@ for i in $(seq 0 $(($EXP_COUNT - 1))); do
   echo ""
 done
 
-# Source indicator
+# Verify the degradation architecture: did the LLM succeed or did the rules engine take over?
 if [ "$SOURCE" = "llm" ]; then
   echo "  ✓ LLM-composed recommendation"
 else
@@ -84,7 +84,8 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# ── Idempotency test ──
+# ── Verify Eventual Consistency & Caching ──
+# Proving that sending the exact same payload instantly resolves from Redis without invoking the LLM stack.
 echo "  Idempotency test (same request_id)..."
 echo ""
 

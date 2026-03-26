@@ -2,7 +2,8 @@ package models
 
 import "time"
 
-// ContextSignal represents a single enrichment signal
+// ContextSignal defines the rigid vocabulary of measurable environmental factors.
+// Using a strong type ensures we don't accidentally pass raw strings into the tracking layer.
 type ContextSignal string
 
 const (
@@ -12,7 +13,7 @@ const (
 	SignalPreferences ContextSignal = "preferences"
 )
 
-// RecommendationRequest is the input from the API client
+// RecommendationRequest is the immutable input contract mapped directly from the HTTP payload.
 type RecommendationRequest struct {
 	RequestID      string   `json:"request_id,omitempty"`
 	Lat            float64  `json:"lat"`
@@ -21,7 +22,9 @@ type RecommendationRequest struct {
 	Preferences    []string `json:"preferences"`
 }
 
-// RecommendationContext holds the enriched context as it flows through the pipeline
+// RecommendationContext acts as the centralized "knowledge graph" for a single request.
+// It mutates as it flows through the pipeline, aggregating data from disparate enrichers
+// into a single cohesive state that the decision engine can reason about.
 type RecommendationContext struct {
 	RequestID    string
 	Lat          float64
@@ -52,7 +55,8 @@ type RecommendationContext struct {
 	SemanticTags []string
 }
 
-// Experience is a single partner offer within a recommendation
+// Experience projects a complex internal Partner database record into an optimized
+// semantic shape suitable for JSON serialization and prompt construction.
 type Experience struct {
 	PartnerID   string  `json:"partner_id"`
 	PartnerName string  `json:"partner_name"`
@@ -61,7 +65,8 @@ type Experience struct {
 	DistanceKm  float64 `json:"distance_km,omitempty"`
 }
 
-// Recommendation is the composed output from the decision engine
+// Recommendation encapsulates the resolved business output, completely decoupled
+// from the HTTP transport layer but heavily decorated with observability metadata.
 type Recommendation struct {
 	Title                string       `json:"title"`
 	Experiences          []Experience `json:"experiences"`
@@ -71,20 +76,22 @@ type Recommendation struct {
 	ContextSignalsFailed []string     `json:"context_signals_failed"`
 }
 
-// RecommendationResponse is the full API response
+// RecommendationResponse defines the strict outward-facing API contract.
 type RecommendationResponse struct {
 	RequestID      string         `json:"request_id"`
 	Recommendation Recommendation `json:"recommendation"`
 	Meta           ResponseMeta   `json:"meta"`
 }
 
-// ResponseMeta holds performance and debugging info
+// ResponseMeta separates core business data from operational telemetry,
+// allowing clients to blindly parse the payload while debugging tools inspect the envelope.
 type ResponseMeta struct {
 	LatencyMs int64 `json:"latency_ms"`
 	FromCache bool  `json:"from_cache"`
 }
 
-// RecommendationEvent is published to Pub/Sub
+// RecommendationEvent represents an asynchronous domain event. It structurally separates
+// the synchronous user flow from delayed background processing like billing or ML training.
 type RecommendationEvent struct {
 	RequestID string         `json:"request_id"`
 	EventType string         `json:"event_type"`

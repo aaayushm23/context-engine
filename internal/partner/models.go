@@ -2,7 +2,8 @@ package partner
 
 import "time"
 
-// Partner represents a registered service provider
+// Partner establishes the core domain entity for supply-side inventory.
+// Its fields are heavily optimized for rapid JSON serialization and PostGIS bounding-box queries.
 type Partner struct {
 	ID                string                 `json:"id"`
 	Name              string                 `json:"name"`

@@ -9,9 +9,9 @@ import (
 type State int
 
 const (
-	StateClosed   State = iota // Normal operation
-	StateOpen                  // Failing, reject requests
-	StateHalfOpen              // Testing recovery — only one probe allowed
+	StateClosed   State = iota // Closed circuit freely accepts and routes requests.
+	StateOpen                  // Open circuit instantly sheds load to protect downstream.
+	StateHalfOpen              // Half-open conditionally allows exactly one test probe.
 )
 
 var ErrCircuitOpen = errors.New("circuit breaker is open")
@@ -24,7 +24,7 @@ type CircuitBreaker struct {
 	recoveryTimeout  time.Duration
 	lastFailure      time.Time
 	name             string
-	halfOpenProbing  bool // prevents thundering herd in half-open state
+	halfOpenProbing  bool // Serialization lock preventing thundering herd during recovery.
 }
 
 func NewCircuitBreaker(name string, threshold int, recovery time.Duration) *CircuitBreaker {
@@ -41,11 +41,11 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 
 	switch cb.state {
 	case StateOpen:
-		// Check if recovery timeout has elapsed
+		// The halfOpenProbing flag prevents a "thundering herd" scenario when the circuit recovers.
+		// If 100 requests arrive exactly when the timeout elapses, we only want ONE to test the waters.
 		if time.Since(cb.lastFailure) > cb.recoveryTimeout {
-			// Only allow ONE probe request through (prevents thundering herd)
 			if cb.halfOpenProbing {
-				// Another goroutine is already probing — reject this one
+				// We intentionally fail-fast here rather than queuing, preserving system capacity.
 				cb.mu.Unlock()
 				return ErrCircuitOpen
 			}
@@ -58,7 +58,8 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 		return ErrCircuitOpen
 
 	case StateHalfOpen:
-		// A probe is already in progress — reject all other requests
+		// Strict serialization during the testing phase: any request that isn't the assigned probe
+		// immediately receives a cached failure to prevent overwhelming a recovering upstream.
 		if cb.halfOpenProbing {
 			cb.mu.Unlock()
 			return ErrCircuitOpen
@@ -82,7 +83,8 @@ func (cb *CircuitBreaker) tryExecution(fn func() error) error {
 		cb.failureCount++
 		cb.lastFailure = time.Now()
 		if cb.state == StateHalfOpen {
-			// Probe failed — back to open
+			// If the single probe fails, we instantly collapse back to the Open state,
+			// resetting the recovery timer without accumulating multiple failures.
 			cb.state = StateOpen
 			cb.halfOpenProbing = false
 		} else if cb.failureCount >= cb.failureThreshold {
@@ -91,7 +93,8 @@ func (cb *CircuitBreaker) tryExecution(fn func() error) error {
 		return err
 	}
 
-	// Success — reset to closed
+	// A successful execution (especially in HalfOpen) proves upstream stability,
+	// allowing us to safely flush the failure counter and open the floodgates.
 	cb.failureCount = 0
 	cb.state = StateClosed
 	cb.halfOpenProbing = false
